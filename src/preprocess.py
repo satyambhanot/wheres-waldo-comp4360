@@ -1,9 +1,10 @@
-"""Tiling pipeline for generating detection training data.
+"""Tiling pipeline and preprocessing for detection training data.
 
 Takes 19 original Where's Waldo illustrations with Pascal VOC
 bounding box annotations and generates overlapping tiles at
 64/128/256 resolutions with per-tile YOLO-format labels. Also
-creates reproducible train/val/test splits by original image.
+provides HSV masking, Sobel edge detection, and density filtering
+for the preprocessing pipeline used during training.
 """
 
 import json
@@ -14,11 +15,19 @@ from pathlib import Path
 from typing import Optional
 
 import cv2
+import numpy as np
 
 from src.config import (
     ANNOTATIONS,
     DATA_PROCESSED,
     DATA_RAW,
+    DENSITY_THRESHOLD,
+    HSV_RED_HIGH1,
+    HSV_RED_HIGH2,
+    HSV_RED_LOW1,
+    HSV_RED_LOW2,
+    HSV_WHITE_HIGH,
+    HSV_WHITE_LOW,
     RESOLUTIONS,
     TILE_OVERLAP,
     TRAIN_SPLIT,
@@ -458,6 +467,136 @@ def run_tiling_pipeline(
     create_splits(DATA_PROCESSED)
 
     return results
+
+
+# =============================================================================
+# HSV MASKING AND SOBEL EDGE PREPROCESSING
+# =============================================================================
+
+
+def dual_hsv_mask(tile: np.ndarray) -> np.ndarray:
+    """Create a binary mask highlighting red and white regions.
+
+    Targets Waldo's distinctive red-and-white striped pattern using
+    dual HSV ranges. Red requires two ranges because it wraps around
+    in HSV space (hue 0-10 and 170-180).
+
+    Args:
+        tile: BGR image tile as numpy array (H, W, 3).
+
+    Returns:
+        Binary mask (H, W) where 255 = red or white region.
+    """
+    hsv = cv2.cvtColor(tile, cv2.COLOR_BGR2HSV)
+
+    # --- Red mask (two ranges because red wraps in HSV) ---
+    red_low = cv2.inRange(hsv, np.array(HSV_RED_LOW1), np.array(HSV_RED_HIGH1))
+    red_high = cv2.inRange(hsv, np.array(HSV_RED_LOW2), np.array(HSV_RED_HIGH2))
+    red_mask = cv2.bitwise_or(red_low, red_high)
+
+    # --- White mask (high value, low saturation) ---
+    white_mask = cv2.inRange(hsv, np.array(HSV_WHITE_LOW), np.array(HSV_WHITE_HIGH))
+
+    combined = cv2.bitwise_or(red_mask, white_mask)
+    return combined
+
+
+def sobel_edges(tile: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Apply Sobel edge detection to masked regions of a tile.
+
+    Computes gradient magnitude using Sobel operators in X and Y
+    directions, but only within the HSV-masked region. This highlights
+    Waldo's stripe edges while ignoring background texture.
+
+    Args:
+        tile: BGR image tile as numpy array (H, W, 3).
+        mask: Binary mask from dual_hsv_mask (H, W).
+
+    Returns:
+        Edge magnitude image (H, W) normalized to [0, 255] uint8.
+    """
+    gray = cv2.cvtColor(tile, cv2.COLOR_BGR2GRAY)
+
+    # Apply mask so edges are only detected in red/white regions
+    masked_gray = cv2.bitwise_and(gray, gray, mask=mask)
+
+    sobel_x = cv2.Sobel(masked_gray, cv2.CV_64F, 1, 0, ksize=3)
+    sobel_y = cv2.Sobel(masked_gray, cv2.CV_64F, 0, 1, ksize=3)
+    magnitude = np.sqrt(sobel_x**2 + sobel_y**2)
+
+    # Normalize to uint8 range
+    max_val = magnitude.max()
+    if max_val > 0:
+        result: np.ndarray = (magnitude / max_val * 255).astype(np.uint8)
+    else:
+        result = magnitude.astype(np.uint8)
+
+    return result
+
+
+_SOBEL_ACTIVE_THRESHOLD = 30
+
+
+def edge_density(sobel_output: np.ndarray) -> float:
+    """Compute fraction of pixels with significant edge energy.
+
+    Used as a quick filter to discard tiles that are pure background
+    (no interesting edges). Tiles below DENSITY_THRESHOLD are skipped
+    during training to reduce false positives and computation.
+
+    Args:
+        sobel_output: Edge magnitude image from sobel_edges (H, W).
+
+    Returns:
+        Fraction of pixels above the activity threshold [0.0, 1.0].
+    """
+    active_pixels = int(np.sum(sobel_output > _SOBEL_ACTIVE_THRESHOLD))
+    total_pixels = sobel_output.shape[0] * sobel_output.shape[1]
+
+    if total_pixels == 0:
+        return 0.0
+
+    return float(active_pixels / total_pixels)
+
+
+def preprocess_tile(
+    tile: np.ndarray,
+    use_sobel: bool = True,
+) -> Optional[np.ndarray]:
+    """Run the full preprocessing pipeline on a single tile.
+
+    Applies dual HSV masking and Sobel edge detection, then checks
+    edge density. If density is below threshold, returns None to
+    indicate this tile should be skipped. Otherwise returns the
+    processed image array.
+
+    Args:
+        tile: BGR image tile as numpy array (H, W, 3).
+        use_sobel: If True, stack Sobel magnitude as 4th channel.
+            If False, return normalized RGB only.
+
+    Returns:
+        Processed image as float32 array with shape (3, H, W) or
+        (4, H, W) if use_sobel=True. Returns None if the tile
+        fails the density filter.
+    """
+    mask = dual_hsv_mask(tile)
+    sobel = sobel_edges(tile, mask)
+    density = edge_density(sobel)
+
+    if density < DENSITY_THRESHOLD:
+        return None
+
+    # --- Convert BGR to RGB and normalize to [0, 1] ---
+    rgb = cv2.cvtColor(tile, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    rgb = np.transpose(rgb, (2, 0, 1))  # (H,W,3) -> (3,H,W)
+
+    if use_sobel:
+        sobel_norm = sobel.astype(np.float32) / 255.0
+        sobel_channel = np.expand_dims(sobel_norm, axis=0)  # (1,H,W)
+        return np.concatenate([rgb, sobel_channel], axis=0)  # (4,H,W)
+
+    return rgb  # (3,H,W)
 
 
 # =============================================================================
