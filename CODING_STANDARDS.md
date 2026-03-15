@@ -198,3 +198,51 @@ Examples:
 - `docs: add docstrings to WaldoDataset`
 - `test: add sanity check for DataLoader output shapes`
 - `chore: update requirements.txt`
+
+## Comments
+
+### Inline Comments
+```python
+# YES — explains WHY, not WHAT
+stride = int(resolution * (1 - TILE_OVERLAP))  # Overlap prevents splitting Waldo at boundaries
+
+# YES — clarifies non-obvious logic
+if iou > 0.3:  # Threshold chosen to include partially visible Waldo instances
+
+# NO — states the obvious
+x = x + 1  # Increment x
+img = cv2.imread(path)  # Read image
+```
+
+### Block Comments — Use for Logic Blocks
+```python
+# --- Dual HSV masking ---
+# Red wraps around in HSV space (0-10 and 170-180), so we need
+# two separate masks combined with bitwise OR.
+red_mask_low = cv2.inRange(hsv, HSV_RED_LOW1, HSV_RED_HIGH1)
+red_mask_high = cv2.inRange(hsv, HSV_RED_LOW2, HSV_RED_HIGH2)
+red_mask = cv2.bitwise_or(red_mask_low, red_mask_high)
+```
+
+### Section Separators — Use in Long Files
+```python
+# =============================================================================
+# ANCHOR GENERATION
+# =============================================================================
+```
+
+### TODO Comments — Always Include Owner and Date
+```python
+# TODO(satyam, 2026-03-15): Fix bounding box for images 5 and 16
+# TODO(gabe): Implement filter pruning for ablation 4
+# FIXME(rudy): Loss diverges after epoch 150 with lr=1e-2
+```
+
+### Rules
+- **Never** comment WHAT the code does — the code itself should be clear
+- **Always** comment WHY when the reason isn't obvious
+- **Always** comment non-trivial math, thresholds, or domain-specific logic
+- **Never** leave commented-out code — delete it, git has history
+- **Always** use `# TODO(name):` format for pending work
+- Block comments go ABOVE the code they describe, never to the right
+- Keep inline comments short (< 40 chars after the `#`)
