@@ -58,5 +58,11 @@ NMS_THRESHOLD: float = 0.45
 CONFIDENCE_THRESHOLD: float = 0.5
 
 # === Device ===
-DEVICE: torch.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+# Prefer MPS (Apple Silicon), then CUDA, then CPU
+if torch.backends.mps.is_available():
+    DEVICE: torch.device = torch.device("mps")
+elif torch.cuda.is_available():
+    DEVICE = torch.device("cuda")
+else:
+    DEVICE = torch.device("cpu")
 logger.info("Using device: %s", DEVICE)
