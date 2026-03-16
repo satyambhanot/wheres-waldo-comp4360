@@ -37,6 +37,9 @@ HSV_RED_HIGH2: tuple[int, int, int] = (180, 255, 255)
 HSV_WHITE_LOW: tuple[int, int, int] = (0, 0, 200)
 HSV_WHITE_HIGH: tuple[int, int, int] = (180, 30, 255)
 DENSITY_THRESHOLD: float = 0.05
+SOBEL_ACTIVE_THRESHOLD: int = 30
+OVERLAP_THRESHOLD: float = 0.3
+RANDOM_SEED: int = 42
 
 # === Model ===
 NUM_CLASSES: int = 2

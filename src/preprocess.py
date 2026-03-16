@@ -28,7 +28,10 @@ from src.config import (
     HSV_RED_LOW2,
     HSV_WHITE_HIGH,
     HSV_WHITE_LOW,
+    OVERLAP_THRESHOLD,
+    RANDOM_SEED,
     RESOLUTIONS,
+    SOBEL_ACTIVE_THRESHOLD,
     TILE_OVERLAP,
     TRAIN_SPLIT,
     VAL_SPLIT,
@@ -222,9 +225,6 @@ def format_yolo_line(class_id: int, box: list[int], resolution: int) -> str:
 # TILING PIPELINE
 # =============================================================================
 
-# Minimum fraction of Waldo visible in a tile to label it positive
-_OVERLAP_THRESHOLD = 0.3
-
 
 def tile_single_image(
     image_path: Path,
@@ -288,7 +288,7 @@ def tile_single_image(
             for waldo_box in waldo_boxes:
                 overlap = compute_overlap_ratio(waldo_box, tile_box)
 
-                if overlap >= _OVERLAP_THRESHOLD:
+                if overlap >= OVERLAP_THRESHOLD:
                     clipped = clip_box_to_tile(waldo_box, tile_box)
                     yolo_line = format_yolo_line(0, clipped, resolution)
                     label_lines.append(yolo_line)
@@ -323,8 +323,6 @@ def tile_single_image(
 # TRAIN / VAL / TEST SPLIT
 # =============================================================================
 
-_RANDOM_SEED = 42
-
 
 def create_splits(processed_dir: Path) -> dict[str, list[str]]:
     """Create reproducible train/val/test splits by original image.
@@ -352,7 +350,7 @@ def create_splits(processed_dir: Path) -> dict[str, list[str]]:
         raise ValueError(f"No tiles found in {tile_dir}")
 
     # --- Shuffle with fixed seed for reproducibility ---
-    random.seed(_RANDOM_SEED)
+    random.seed(RANDOM_SEED)
     random.shuffle(originals)
 
     n = len(originals)
@@ -534,9 +532,6 @@ def sobel_edges(tile: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return result
 
 
-_SOBEL_ACTIVE_THRESHOLD = 30
-
-
 def edge_density(sobel_output: np.ndarray) -> float:
     """Compute fraction of pixels with significant edge energy.
 
@@ -550,7 +545,7 @@ def edge_density(sobel_output: np.ndarray) -> float:
     Returns:
         Fraction of pixels above the activity threshold [0.0, 1.0].
     """
-    active_pixels = int(np.sum(sobel_output > _SOBEL_ACTIVE_THRESHOLD))
+    active_pixels = int(np.sum(sobel_output > SOBEL_ACTIVE_THRESHOLD))
     total_pixels = sobel_output.shape[0] * sobel_output.shape[1]
 
     if total_pixels == 0:
