@@ -372,49 +372,27 @@ def run_experiment(
     is_pruned = prune_ratio > 0.0
 
     # --- Train ---
+    best_ckpt_path = CHECKPOINTS / "best_model.pth"
     train_start = time.time()
 
     if is_pruned:
-        # Pruned model needs special construction, then standard training
-        # Pass config without the prune key so train() uses standard setup
-        train_config = {k: v for k, v in config.items() if k != "filter_prune_ratio"}
-        best_val_ap = train(config_overrides=train_config)
-    else:
-        best_val_ap = train(config_overrides=config)
-
-    training_time_min = (time.time() - train_start) / 60.0
-
-    # --- Load best model for evaluation ---
-    best_ckpt_path = CHECKPOINTS / "best_model.pth"
-
-    if is_pruned:
+        # Pruned model has different extra-layer dimensions, so train()
+        # (which builds its own model) can't be used. Train directly
+        # with the pruned architecture via _train_pruned_model.
         model = create_pruned_model(
             num_classes=NUM_CLASSES,
             in_channels=in_channels,
             prune_ratio=prune_ratio,
         )
-        # Re-train the pruned model properly
-        set_seed(_SEED)
-        # For pruned, we need to train from scratch with the pruned architecture
-        # The initial train() call above used standard architecture, so retrain
-        logger.info("Retraining pruned model variant...")
-        train_start = time.time()
-
-        # Create pruned model, generate anchors, then move to device
-        pruned_model = create_pruned_model(
-            num_classes=NUM_CLASSES,
-            in_channels=in_channels,
-            prune_ratio=prune_ratio,
-        )
-        anchors = pruned_model.get_anchors(resolution)
-        pruned_model = pruned_model.to(DEVICE)
+        anchors = model.get_anchors(resolution)
+        model = model.to(DEVICE)
         anchors = anchors.to(DEVICE)
 
-        # Run custom training loop for pruned model
-        best_val_ap = _train_pruned_model(pruned_model, anchors, config)
-        training_time_min = (time.time() - train_start) / 60.0
-        model = pruned_model
+        best_val_ap = _train_pruned_model(model, anchors, config)
     else:
+        best_val_ap = train(config_overrides=config)
+
+        # Reload best checkpoint for evaluation
         model = WaldoSSD(
             num_classes=NUM_CLASSES,
             num_heads=num_heads,
@@ -423,6 +401,8 @@ def run_experiment(
         if best_ckpt_path.exists():
             checkpoint = torch.load(best_ckpt_path, map_location="cpu", weights_only=True)
             model.load_state_dict(checkpoint["model_state_dict"])
+
+    training_time_min = (time.time() - train_start) / 60.0
 
     # Generate anchors on CPU, then move everything to device
     anchors = model.get_anchors(resolution)
