@@ -418,7 +418,7 @@ def save_detection_examples(
     # Collect examples: (confidence, image_tensor, pred_box_px, gt_boxes_px, category)
     tp_examples: list[tuple[float, torch.Tensor, list[float], torch.Tensor]] = []
     fp_examples: list[tuple[float, torch.Tensor, list[float], torch.Tensor]] = []
-    fn_examples: list[tuple[torch.Tensor, list[float], torch.Tensor]] = []
+    fn_examples: list[tuple[torch.Tensor, list[float]]] = []
 
     with torch.no_grad():
         for images, targets in loader:
@@ -453,13 +453,7 @@ def save_detection_examples(
 
                 # Unmatched GT boxes are false negatives
                 for g_idx in unmatched_gt:
-                    fn_examples.append(
-                        (
-                            img_tensor,
-                            gt_on_device[g_idx].cpu().tolist(),
-                            gt_boxes_px,
-                        )
-                    )
+                    fn_examples.append((img_tensor, gt_on_device[g_idx].cpu().tolist()))
 
     # --- Sort and select top examples ---
     # TPs: highest confidence correct detections
@@ -494,7 +488,7 @@ def save_detection_examples(
         summary["fp"].append({"file": filename, "confidence": conf, "pred_box": pred_box})
 
     # --- Save False Negative examples ---
-    for i, (img_t, gt_box, gt_boxes) in enumerate(fn_examples[:_NUM_EXAMPLES_PER_CATEGORY]):
+    for i, (img_t, gt_box) in enumerate(fn_examples[:_NUM_EXAMPLES_PER_CATEGORY]):
         img_bgr = _tensor_to_bgr(img_t)
         _draw_box(img_bgr, gt_box, _COLOR_GREEN_BGR, "GT")
         _draw_category_label(img_bgr, "FN - MISSED")
