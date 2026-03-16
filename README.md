@@ -1,128 +1,165 @@
-# Where's Waldo Object Detection - COMP 4360
+# Where's Waldo? - CNN-Based Character Detection in Cluttered Scenes
 
-An SSD (Single Shot MultiBox Detector) pipeline for automatically locating Waldo in "Where's Waldo?" puzzle illustrations. Adapted from a strawberry detection architecture to the Waldo domain as part of a university machine learning course.
+**Course:** COMP 4360 Machine Learning, University of Manitoba
+**Team:** Rudy Kissel, Satyam Bhanot, Gabriel Barnabe
+**Instructor:** Dr. Christopher Henry
+**Date:** March 2026
 
-## Project Overview
+This project adapts a strawberry detection system (Lamb & Chuah, IEEE Big Data 2018) to the domain of locating Waldo in "Where's Waldo?" puzzle illustrations. We replace the original 3-layer CNN with a MobileNet V3 Large backbone, extend the SSD detection heads from 4 to 6 levels, and introduce dual HSV masking with Sobel edge detection to exploit Waldo's distinctive red-and-white stripe pattern. The model processes high-resolution puzzle images as overlapping tiles at 64x64, 128x128, and 256x256 resolutions, predicting per-tile bounding boxes for Waldo's location.
 
-This project builds an end-to-end object detection system that takes a high-resolution Waldo puzzle illustration and predicts bounding boxes around Waldo. The pipeline covers data preprocessing, multi-scale tiling, model architecture, training with hard negative mining, and evaluation with PASCAL VOC Average Precision.
+## Quick Start
 
-### Key Design Decisions
+```bash
+# 1. Clone the repository
+git clone https://github.com/satyambhanot/wheres-waldo-comp4360.git
+cd wheres-waldo-comp4360
 
-- **Tiling approach**: Original illustrations are too large for direct input, so we tile them into 64x64, 128x128, and 256x256 patches with 15% overlap to prevent splitting Waldo at tile boundaries.
-- **HSV + Sobel preprocessing**: Exploits Waldo's red-and-white striped pattern via dual HSV masking and Sobel edge detection, added as an optional 4th input channel.
-- **Hard negative mining**: The dataset is severely imbalanced (~3% positive tiles at 256px), so the loss function selects the hardest background examples to prevent the model from trivially predicting "no Waldo" everywhere.
-- **Ablation-ready**: The training pipeline accepts config overrides so experiments can systematically vary resolution, color mode, Sobel usage, and number of detection heads.
+# 2. Set up the environment
+make setup
 
-## Architecture
+# 3. Place raw images in data/raw/ (see Data Setup below)
 
-```
-Input (B, 3or4, H, H)
-    │
-    ├── MobileNetV3 Large Backbone (pretrained on ImageNet)
-    │   ├── Stage 1: features[0:4]   → 24ch   (H/2  × H/2)
-    │   ├── Stage 2: features[4:7]   → 40ch   (H/4  × H/4)
-    │   ├── Stage 3: features[7:13]  → 112ch  (H/8  × H/8)
-    │   └── Stage 4: features[13:17] → 960ch  (H/16 × H/16)
-    │
-    ├── Extra Block 1: 960 → 256 → 512ch  (H/32 × H/32)
-    └── Extra Block 2: 512 → 128 → 256ch  (H/64 × H/64)
+# 4. Generate tiles and train
+make data
+make train
 
-Each level → Classification Head (3 anchors × 2 classes)
-           → Regression Head    (3 anchors × 4 offsets)
+# 5. Evaluate on test set
+make evaluate
 ```
 
-| Input Size | Feature Map Sizes | Total Anchors | Parameters |
-|------------|-------------------|---------------|------------|
-| 64×64      | 16, 8, 4, 2, 1, 1 | 1,026 | 5.07M |
-| 128×128    | 32, 16, 8, 4, 2, 1 | 4,095 | 5.07M |
-| 256×256    | 64, 32, 16, 8, 4, 2 | 16,380 | 5.07M |
+> **Note:** Raw puzzle images must be placed manually in `data/raw/images/` and `data/raw/annotations/` before running. These files are not included in the repository due to size and copyright. See [Data Setup](#data-setup) for instructions.
+
+## Prerequisites
+
+- **Python 3.11+**
+- **macOS with Apple Silicon** (M1/M2) for MPS acceleration, OR **Linux/Windows with NVIDIA GPU** (CUDA)
+- ~2 GB disk space for Python dependencies
+- ~200 MB for processed tiles
+- Training takes 2-4 hours on an M2 MacBook (200 epochs at 256px). Adjust expectations for slower hardware.
 
 ## Project Structure
 
 ```
 wheres-waldo-comp4360/
 ├── src/
-│   ├── __init__.py
-│   ├── config.py          # Central configuration (paths, hyperparameters, constants)
-│   ├── preprocess.py      # Tiling pipeline, HSV masking, Sobel edge detection
-│   ├── dataset.py         # PyTorch Dataset and DataLoader with color modes
-│   ├── model.py           # WaldoSSD architecture with MobileNetV3 backbone
-│   └── train.py           # Training loop, SSD loss, anchor matching, AP evaluation
+│   ├── __init__.py                [CUSTOM]  Package init
+│   ├── config.py                  [CUSTOM]  Central configuration (paths, hyperparams)
+│   ├── preprocess.py              [CUSTOM]  Tiling pipeline, HSV masking, Sobel edges
+│   ├── dataset.py                 [CUSTOM]  PyTorch Dataset and DataLoader
+│   ├── model.py                   [CUSTOM]  WaldoSSD (MobileNet V3 + SSD heads)
+│   ├── train.py                   [CUSTOM]  Training loop, SSD loss, hard negative mining
+│   ├── evaluate.py                [CUSTOM]  Metrics computation + visual result examples
+│   └── ablation.py                [CUSTOM]  Experiment runner for all 4 ablation studies
 ├── data/
-│   ├── data.json          # Waldo locations per image at 128px grid
+│   ├── data.json                             Waldo grid locations (reference)
 │   ├── raw/
-│   │   ├── images/        # 19 original Waldo illustrations (.jpg)
-│   │   └── annotations/   # Pascal VOC XML bounding box annotations
+│   │   ├── images/                           19 original Waldo illustrations (.jpg)
+│   │   └── annotations/                      Pascal VOC XML bounding box annotations
 │   └── processed/
-│       ├── splits.json    # Train/val/test split assignments
-│       ├── 64/            # ~15,884 tiles at 64×64
-│       ├── 128/           # ~3,789 tiles at 128×128
-│       └── 256/           # ~844 tiles at 256×256
+│       ├── splits.json                        Train/val/test split assignments
+│       ├── 64/                                ~15,884 tiles at 64x64
+│       ├── 128/                               ~3,789 tiles at 128x128
+│       └── 256/                               ~844 tiles at 256x256
 ├── results/
-│   ├── checkpoints/       # Saved model weights (.pth)
-│   └── plots/             # Evaluation visualizations
-├── notebooks/             # Jupyter notebooks for exploration
+│   ├── checkpoints/                           Saved model weights (.pth)
+│   ├── plots/                                 Visual TP/FP/FN examples
+│   └── ablations/                             Per-experiment JSON results
+├── notebooks/                                 Jupyter notebooks (exploration)
 ├── scripts/
-│   ├── check.sh           # Code quality checker (black, isort, flake8, mypy, ...)
-│   └── commit.sh          # Commit helper
-├── requirements.txt       # Pinned Python dependencies
-├── pyproject.toml         # Tool configuration (black, isort, mypy)
-├── CODING_STANDARDS.md    # Project coding conventions
+│   ├── check.sh                  [CUSTOM]   8-point code quality checker
+│   ├── commit.sh                 [CUSTOM]   Safe commit wrapper
+│   └── run_pipeline.sh           [CUSTOM]   Full pipeline runner
+├── Makefile                      [CUSTOM]   Project command entry point
+├── requirements.txt                          Pinned Python dependencies
+├── pyproject.toml                            Tool configuration (black, isort, mypy)
+├── CODING_STANDARDS.md           [CUSTOM]   Project coding conventions
+├── .github/CODEOWNERS                        Default reviewer
 └── .gitignore
 ```
 
-## Setup
+**File origin key:**
+- `[CUSTOM]` - Entirely written by our team for this project
+- `[ADAPTED]` - Based on an existing implementation with significant modifications
+- `[ORIGINAL]` - Unmodified from original source
 
-### Prerequisites
+All `src/` modules are `[CUSTOM]` - written from scratch by our team.
 
-- Python 3.11+
-- macOS with Apple Silicon (M1/M2) for MPS acceleration, or any system with CPU/CUDA
+**Data sources:**
+- Puzzle images: [Hey-Waldo](https://github.com/vc1492a/Hey-Waldo) by vc1492a
+- Bounding box annotations: [TheresWaldo](https://github.com/bckenstler/TheresWaldo) by bckenstler
 
-### Installation
+## Data Setup
+
+Raw images are not included in the repository (too large, copyright restrictions). To obtain them:
+
+1. **Clone the Hey-Waldo repository** (puzzle images):
+   ```bash
+   git clone https://github.com/vc1492a/Hey-Waldo.git /tmp/hey-waldo
+   ```
+
+2. **Clone the TheresWaldo repository** (bounding box annotations):
+   ```bash
+   git clone https://github.com/bckenstler/TheresWaldo.git /tmp/theres-waldo
+   ```
+
+3. **Copy images** to the project:
+   ```bash
+   cp /tmp/hey-waldo/images/*.jpg data/raw/images/
+   ```
+
+4. **Copy annotations** to the project:
+   ```bash
+   cp /tmp/theres-waldo/annotations/*.xml data/raw/annotations/
+   ```
+
+5. **Generate tiles** at all resolutions:
+   ```bash
+   make data
+   ```
+
+The tiling pipeline produces overlapping tiles (15% overlap) at three resolutions:
+
+| Resolution | Total Tiles | Positive (Waldo) | Negative (Background) | Positive Rate |
+|------------|-------------|-------------------|----------------------|---------------|
+| 256x256    | ~844        | ~24               | ~820                 | ~2.8%         |
+| 128x128    | ~3,789      | ~30               | ~3,759               | ~0.8%         |
+| 64x64      | ~15,884     | ~32               | ~15,852              | ~0.2%         |
+
+Splits are by original image (not by tile) to prevent data leakage:
+- **Train:** 11 images (525 tiles at 256px)
+- **Val:** 3 images (144 tiles at 256px)
+- **Test:** 5 images (175 tiles at 256px)
+
+## Training
+
+### Run Baseline Training
 
 ```bash
-# Clone the repository
-git clone <repo-url>
-cd wheres-waldo-comp4360
-
-# Create and activate virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
+make train
 ```
 
-### Data Preparation
+This trains the default configuration: 256px resolution, color mode, Sobel ON, 6 SSD heads, 200 epochs.
 
-Place the 19 original Waldo illustrations in `data/raw/images/` as `.jpg` files and their Pascal VOC annotations in `data/raw/annotations/` as `.xml` files. Then run the tiling pipeline:
+### What to Expect
 
-```bash
-python -m src.preprocess
-```
+- **Epochs 1-20:** Loss decreases rapidly from ~300 to ~50. AP remains near 0.
+- **Epochs 20-50:** Loss stabilizes. First non-zero AP values may appear.
+- **Epochs 50-200:** Gradual AP improvement as the model learns to distinguish Waldo from hard negatives.
 
-This generates overlapping tiles at all three resolutions (64, 128, 256) and creates the train/val/test splits.
+### Checkpoints
 
-## Usage
+- **Best model:** `results/checkpoints/best_model.pth` (saved when val AP improves)
+- **Periodic:** `results/checkpoints/checkpoint_epoch_XXX.pth` (every 20 epochs)
 
-### Training
+Each checkpoint stores model weights, optimizer state, scheduler state, validation AP, and the config used.
 
-Run the full training pipeline (200 epochs by default):
-
-```bash
-python -m src.train
-```
-
-The `__main__` block runs a quick 3-epoch sanity check. For a full training run, call `train()` directly or modify the config overrides:
+### Custom Training
 
 ```python
 from src.train import train
 
-# Default full training
-best_ap = train()
-
-# Ablation example: grayscale, no Sobel, 4 detection heads
 best_ap = train(config_overrides={
+    "resolution": 128,
     "color_mode": "grayscale",
     "use_sobel": False,
     "num_heads": 4,
@@ -130,105 +167,158 @@ best_ap = train(config_overrides={
 })
 ```
 
-### Sanity Checks
+## Evaluation
 
-Each module has a `__main__` block for standalone verification:
+### Run Evaluation
 
 ```bash
-python -m src.preprocess   # Run tiling pipeline
-python -m src.dataset      # Verify Dataset and DataLoader shapes
-python -m src.model        # Verify model forward pass and anchor generation
-python -m src.train        # 3-epoch training test
+make evaluate
 ```
 
-## Training Details
+This loads the best checkpoint, runs inference on the test set, and produces:
 
-### Dataset Splits
+- **Metrics:** AP, precision, recall, F1, detection counts
+- **Visual examples:** Annotated images saved to `results/plots/`
+  - `tp_*.jpg` - True positives (green GT box + red prediction box)
+  - `fp_*.jpg` - False positives (red prediction box, no matching GT)
+  - `fn_*.jpg` - False negatives (green GT box, model missed)
+- **Summary JSON:** `results/plots/examples_summary.json`
 
-Splits are done by original image (not by tile) to prevent data leakage:
+### Metrics Explained
 
-| Split | Images | Tiles (256px) |
-|-------|--------|---------------|
-| Train | 11 | 525 (16 positive, 509 negative) |
-| Val   | 3  | 144 (6 positive, 138 negative) |
-| Test  | 5  | 175 |
+| Metric | Description |
+|--------|-------------|
+| **AP** | PASCAL VOC 11-point interpolated Average Precision |
+| **Precision** | TP / (TP + FP) at the configured confidence threshold |
+| **Recall** | TP / (TP + FN) at the configured confidence threshold |
+| **F1** | Harmonic mean of precision and recall |
 
-### Hyperparameters
+## Ablation Studies
 
-| Parameter | Value | Source |
-|-----------|-------|--------|
-| Batch size | 32 | `config.BATCH_SIZE` |
-| Learning rate | 1e-3 | `config.LEARNING_RATE` |
-| Weight decay | 1e-4 | `config.WEIGHT_DECAY` |
-| Epochs | 200 | `config.NUM_EPOCHS` |
-| LR scheduler | Cosine annealing | `config.LR_SCHEDULER` |
-| Neg:pos ratio | 3:1 | `config.NEG_POS_RATIO` |
-| IoU threshold | 0.5 | `config.IOU_THRESHOLD` |
-| NMS threshold | 0.45 | `config.NMS_THRESHOLD` |
-| Confidence threshold | 0.5 | `config.CONFIDENCE_THRESHOLD` |
-| Gradient clip norm | 5.0 | `train._GRAD_CLIP_MAX_NORM` |
+We run 4 ablation studies, each isolating a single variable against the baseline (256px, color, Sobel ON, 6 heads):
 
-### SSD Loss Function
+### Run All Experiments
 
-The loss combines two components, both normalized by the number of positive anchors:
+```bash
+make ablation
+```
 
-1. **Classification loss**: Cross-entropy over positive anchors + hard-mined negatives (top 3× negatives sorted by loss descending)
-2. **Localization loss**: Smooth L1 over positive anchors only, with offsets encoded as `[dx, dy, dw, dh]` relative to matched anchors
+### Run a Single Experiment
 
-### Preprocessing Pipeline
+```bash
+make ablation-single EXP=abl2_res128
+```
 
-1. **HSV masking**: Dual-range red detection (hue 0-10 and 170-180) + white detection to isolate Waldo's stripes
-2. **Sobel edges**: Gradient magnitude computed only within masked regions
-3. **Density filtering**: Tiles with edge density below 5% are discarded as pure background
-4. **Color modes**: Full color (RGB), grayscale (replicated 3ch), or binary black/white
+### Experiment Keys
 
-### Ablation Variables
+| Key | Description | Variable Changed |
+|-----|-------------|-----------------|
+| `abl1_sobel_on` | Sobel ON (baseline) | - |
+| `abl1_sobel_off` | Sobel OFF | 4ch to 3ch input |
+| `abl2_res256` | 256px (baseline) | - |
+| `abl2_res128` | 128px | Tile resolution |
+| `abl2_res64` | 64px | Tile resolution |
+| `abl3_color` | Color (baseline) | - |
+| `abl3_grayscale` | Grayscale | Color mode |
+| `abl3_bw` | Black & White | Color mode |
+| `abl4_6heads` | 6 heads (baseline) | - |
+| `abl4_4heads` | 4 heads | Detection levels |
+| `abl4_pruned` | 50% pruned extras | Channel reduction |
 
-The architecture supports systematic ablation studies across:
+Results are saved as individual JSON files in `results/ablations/` and a combined `all_results.json`.
 
-| Variable | Options |
-|----------|---------|
-| Resolution | 64, 128, 256 |
-| Color mode | color, grayscale, bw |
-| Sobel channel | on (4ch) / off (3ch) |
-| Detection heads | 6 (full) / 4 (coarse only) |
+Estimated time: 2-4 hours per experiment, ~18-30 hours total. The runner supports resumability - restart after a crash and it skips completed experiments.
 
 ## Code Quality
 
-The project enforces strict code quality standards via `scripts/check.sh`:
+### Check Code
 
 ```bash
-# Check without modifying files
-./scripts/check.sh
-
-# Auto-fix formatting issues
-./scripts/check.sh --fix
+make check    # read-only checks
+make fix      # auto-fix formatting, then check
 ```
 
-### Checks Performed
+### 8 Automated Checks
 
 1. **black** - Code formatting (100 char line length)
 2. **isort** - Import ordering (black-compatible profile)
 3. **flake8** - Linting (unused imports, undefined variables)
-4. **mypy** - Type checking (all functions must have type hints)
-5. **Docstring coverage** - Every public function and class requires a Google-style docstring
-6. **Type hint coverage** - Every public function parameter and return must be annotated
+4. **mypy** - Type checking (all functions have type hints)
+5. **Docstring coverage** - Every public function/class has a Google-style docstring
+6. **Type hint coverage** - Every parameter and return value is annotated
 7. **No print statements** - All output uses the `logging` module
-8. **Magic number detection** - Warns about hardcoded numbers that should be in `config.py`
+8. **Magic number detection** - Warns about hardcoded numbers outside `config.py`
 
-## Tech Stack
+All code in this repository passes all 8 checks.
 
-| Component | Library |
-|-----------|---------|
-| Deep learning | PyTorch 2.10, torchvision 0.25 |
-| Backbone | MobileNet V3 Large (ImageNet pretrained) |
-| Image processing | OpenCV (headless) |
-| Compute device | Apple MPS (M2), CPU fallback |
-| Formatting | black, isort |
-| Linting | flake8, mypy |
-| Visualization | matplotlib |
-| Metrics | scikit-learn |
+## Model Architecture
+
+```
+Input (B, 3or4, H, H)
+    |
+    +-- MobileNetV3 Large Backbone (ImageNet pretrained)
+    |   +-- Stage 1: features[0:4]   -> 24ch
+    |   +-- Stage 2: features[4:7]   -> 40ch
+    |   +-- Stage 3: features[7:13]  -> 112ch
+    |   +-- Stage 4: features[13:17] -> 960ch
+    |
+    +-- Extra Block 1: 960 -> 256 -> 512ch (stride 2)
+    +-- Extra Block 2: 512 -> 128 -> 256ch (stride 2)
+
+Each level -> Classification Head (3 anchors x 2 classes)
+           -> Regression Head    (3 anchors x 4 offsets)
+```
+
+- **Input:** 256x256 tiles (or 128/64 for ablation), 3ch RGB or 4ch RGB+Sobel
+- **Anchors:** 3 per location (aspect ratios 1.0, 0.5, 2.0), 16,380 total at 256px
+- **Output:** Per-anchor class logits + bounding box offsets
+- **Parameters:** ~5.07M (all trainable)
+- **Loss:** SSD multi-box loss with hard negative mining (3:1 neg:pos ratio)
+
+## Adaptation from Original Paper
+
+**Source paper:** N. Lamb and S. Chuah, "A Strawberry Detection System Using Convolutional Neural Networks," *2018 IEEE International Conference on Big Data*, 2018.
+
+### What We Kept
+- SSD-style single-shot detection approach
+- Tile-based processing of large images
+- Multi-scale feature extraction with detection heads at each level
+
+### What We Changed
+| Component | Original (Strawberry) | Ours (Waldo) |
+|-----------|----------------------|--------------|
+| Backbone | Custom 3-layer CNN | MobileNet V3 Large (pretrained) |
+| Detection heads | 4 levels | 6 levels (+ 4-head ablation) |
+| Input source | Field video frames | Illustrated puzzle scans |
+| Preprocessing | Single color mask | Dual HSV (red+white) + Sobel edges + density filter |
+| Input channels | 3 (RGB) | 3 (RGB) or 4 (RGB + Sobel edge) |
+| Anchors | Fixed scales | Linearly scaled per level, 3 aspect ratios |
+| Training device | CUDA GPU | Apple MPS (M2) with CPU fallback |
+
+## One-Command Reproduction
+
+For a complete end-to-end run (TA usage):
+
+```bash
+# Full run (200 epochs, ~3 hours)
+./scripts/run_pipeline.sh
+
+# Quick test (10 epochs, ~15 minutes)
+./scripts/run_pipeline.sh --quick
+```
+
+## References
+
+[1] N. Lamb and S. Chuah, "A Strawberry Detection System Using Convolutional Neural Networks," *2018 IEEE International Conference on Big Data (Big Data)*, Seattle, WA, USA, 2018, pp. 2515-2520.
+
+[2] vc1492a, "Hey-Waldo," GitHub repository. [Online]. Available: https://github.com/vc1492a/Hey-Waldo
+
+[3] bckenstler, "TheresWaldo," GitHub repository. [Online]. Available: https://github.com/bckenstler/TheresWaldo
+
+[4] A. Howard et al., "Searching for MobileNetV3," *Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)*, 2019, pp. 1314-1324.
+
+[5] W. Liu et al., "SSD: Single Shot MultiBox Detector," *European Conference on Computer Vision (ECCV)*, 2016, pp. 21-37.
 
 ## License
 
-University coursework - COMP 4360.
+This is a university course project for COMP 4360 at the University of Manitoba. Not intended for redistribution. Where's Waldo images are copyrighted by Martin Handford / Walker Books.
