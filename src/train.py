@@ -196,11 +196,14 @@ def _encode_offsets(
     Returns:
         Offset tensor (4,) as [dx, dy, dw, dh].
     """
-    dx = (gt_box[0] - anchor[0]) / anchor[2]
-    dy = (gt_box[1] - anchor[1]) / anchor[3]
-    # Clamp to prevent log(0) from degenerate GT boxes
-    dw = torch.log(gt_box[2] / anchor[2].clamp(min=1e-6))
-    dh = torch.log(gt_box[3] / anchor[3].clamp(min=1e-6))
+    # Clamp anchor dimensions to prevent division by zero / log(0)
+    anchor_w = anchor[2].clamp(min=1e-6)
+    anchor_h = anchor[3].clamp(min=1e-6)
+
+    dx = (gt_box[0] - anchor[0]) / anchor_w
+    dy = (gt_box[1] - anchor[1]) / anchor_h
+    dw = torch.log(gt_box[2].clamp(min=1e-6) / anchor_w)
+    dh = torch.log(gt_box[3].clamp(min=1e-6) / anchor_h)
     return torch.stack([dx, dy, dw, dh])
 
 
