@@ -1,4 +1,4 @@
-# Where's Waldo Object Detection — COMP 4360
+# Where's Waldo Object Detection - COMP 4360
 
 An SSD (Single Shot MultiBox Detector) pipeline for automatically locating Waldo in "Where's Waldo?" puzzle illustrations. Adapted from a strawberry detection architecture to the Waldo domain as part of a university machine learning course.
 
@@ -207,14 +207,14 @@ The project enforces strict code quality standards via `scripts/check.sh`:
 
 ### Checks Performed
 
-1. **black** — Code formatting (100 char line length)
-2. **isort** — Import ordering (black-compatible profile)
-3. **flake8** — Linting (unused imports, undefined variables)
-4. **mypy** — Type checking (all functions must have type hints)
-5. **Docstring coverage** — Every public function and class requires a Google-style docstring
-6. **Type hint coverage** — Every public function parameter and return must be annotated
-7. **No print statements** — All output uses the `logging` module
-8. **Magic number detection** — Warns about hardcoded numbers that should be in `config.py`
+1. **black** - Code formatting (100 char line length)
+2. **isort** - Import ordering (black-compatible profile)
+3. **flake8** - Linting (unused imports, undefined variables)
+4. **mypy** - Type checking (all functions must have type hints)
+5. **Docstring coverage** - Every public function and class requires a Google-style docstring
+6. **Type hint coverage** - Every public function parameter and return must be annotated
+7. **No print statements** - All output uses the `logging` module
+8. **Magic number detection** - Warns about hardcoded numbers that should be in `config.py`
 
 ## Tech Stack
 
@@ -231,4 +231,4 @@ The project enforces strict code quality standards via `scripts/check.sh`:
 
 ## License
 
-University coursework — COMP 4360.
+University coursework - COMP 4360.
