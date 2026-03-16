@@ -1,0 +1,26 @@
+<annotation>
+	<folder>original-images</folder>
+	<filename>11.jpg</filename>
+	<path>/Users/Bckenstler/Documents/repos/Hey-Waldo/original-images/11.jpg</path>
+	<source>
+		<database>Unknown</database>
+	</source>
+	<size>
+		<width>2828</width>
+		<height>1828</height>
+		<depth>3</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>waldo</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<bndbox>
+			<xmin>460</xmin>
+			<ymin>1530</ymin>
+			<xmax>482</xmax>
+			<ymax>1557</ymax>
+		</bndbox>
+	</object>
+</annotation>

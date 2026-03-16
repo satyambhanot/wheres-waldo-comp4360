@@ -19,22 +19,20 @@ make setup
 
 # 3. Place raw images in data/raw/ (see Data Setup below)
 
-# 4. Generate tiles and train
-make data
+# 4. Train the model
 make train
 
 # 5. Evaluate on test set
 make evaluate
 ```
 
-> **Note:** Raw puzzle images must be placed manually in `data/raw/images/` and `data/raw/annotations/` before running. These files are not included in the repository due to size and copyright. See [Data Setup](#data-setup) for instructions.
+> **Note:** Raw images, annotations, and pre-generated tiles are all included in the repository. No additional data download is needed - just clone and run.
 
 ## Prerequisites
 
 - **Python 3.11+**
 - **macOS with Apple Silicon** (M1/M2) for MPS acceleration, OR **Linux/Windows with NVIDIA GPU** (CUDA)
 - ~2 GB disk space for Python dependencies
-- ~200 MB for processed tiles
 - Training takes 2-4 hours on an M2 MacBook (200 epochs at 256px). Adjust expectations for slower hardware.
 
 ## Project Structure
@@ -90,32 +88,17 @@ All `src/` modules are `[CUSTOM]` - written from scratch by our team.
 
 ## Data Setup
 
-Raw images are not included in the repository (too large, copyright restrictions). To obtain them:
+All data is included in the repository - no additional downloads needed.
 
-1. **Clone the Hey-Waldo repository** (puzzle images):
-   ```bash
-   git clone https://github.com/vc1492a/Hey-Waldo.git /tmp/hey-waldo
-   ```
+- **Raw images:** 19 original Waldo illustrations in `data/raw/images/`
+- **Annotations:** Pascal VOC XML bounding boxes in `data/raw/annotations/`
+- **Pre-generated tiles:** Ready to use in `data/processed/`
 
-2. **Clone the TheresWaldo repository** (bounding box annotations):
-   ```bash
-   git clone https://github.com/bckenstler/TheresWaldo.git /tmp/theres-waldo
-   ```
-
-3. **Copy images** to the project:
-   ```bash
-   cp /tmp/hey-waldo/images/*.jpg data/raw/images/
-   ```
-
-4. **Copy annotations** to the project:
-   ```bash
-   cp /tmp/theres-waldo/annotations/*.xml data/raw/annotations/
-   ```
-
-5. **Generate tiles** at all resolutions:
-   ```bash
-   make data
-   ```
+To regenerate tiles from scratch (optional):
+```bash
+make clean-data
+make data
+```
 
 The tiling pipeline produces overlapping tiles (15% overlap) at three resolutions:
 
