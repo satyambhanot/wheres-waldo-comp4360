@@ -56,26 +56,34 @@ fi
 
 # ----- 3. FLAKE8 -----
 echo "3. flake8 (linting)"
-FLAKE_OUTPUT=$(flake8 src/ 2>/dev/null || true)
-if [ -z "$FLAKE_OUTPUT" ]; then
-    pass "No linting errors"
+if ! command -v flake8 &>/dev/null; then
+    fail "flake8 not installed"
 else
-    fail "Linting errors found:"
-    echo "$FLAKE_OUTPUT" | head -20
+    FLAKE_OUTPUT=$(flake8 src/ 2>/dev/null || true)
+    if [ -z "$FLAKE_OUTPUT" ]; then
+        pass "No linting errors"
+    else
+        fail "Linting errors found:"
+        echo "$FLAKE_OUTPUT" | head -20
+    fi
 fi
 
 # ----- 4. MYPY -----
 echo "4. mypy (type checking)"
-MYPY_OUTPUT=$(mypy src/ --ignore-missing-imports 2>/dev/null || true)
-if echo "$MYPY_OUTPUT" | grep -q "no issues found"; then
-    pass "No type errors"
+if ! command -v mypy &>/dev/null; then
+    fail "mypy not installed"
 else
-    ERRORS=$(echo "$MYPY_OUTPUT" | grep "error" | wc -l | tr -d ' ')
-    if [ "$ERRORS" -gt 0 ]; then
-        fail "Type errors found ($ERRORS):"
-        echo "$MYPY_OUTPUT" | grep "error" | head -10
-    else
+    MYPY_OUTPUT=$(mypy src/ --ignore-missing-imports 2>/dev/null || true)
+    if echo "$MYPY_OUTPUT" | grep -q "no issues found"; then
         pass "No type errors"
+    else
+        ERRORS=$(echo "$MYPY_OUTPUT" | grep "error" | wc -l | tr -d ' ')
+        if [ "$ERRORS" -gt 0 ]; then
+            fail "Type errors found ($ERRORS):"
+            echo "$MYPY_OUTPUT" | grep "error" | head -10
+        else
+            pass "No type errors"
+        fi
     fi
 fi
 
