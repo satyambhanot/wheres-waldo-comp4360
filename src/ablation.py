@@ -10,6 +10,7 @@ Usage:
     python -m src.ablation abl2_res128      # run a single experiment
 """
 
+import copy
 import json
 import logging
 import random
@@ -558,8 +559,6 @@ def _train_pruned_model(
             )
             if val_ap > best_val_ap:
                 best_val_ap = val_ap
-                import copy
-
                 best_state = copy.deepcopy(model.state_dict())
 
     # Restore best-epoch weights for evaluation
