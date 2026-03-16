@@ -423,7 +423,9 @@ class WaldoSSD(nn.Module):
         """
         was_training = self.training
         self.eval()
-        dummy = torch.zeros(1, self.in_channels, image_size, image_size)
+        # Create dummy on same device as model to avoid CPU/GPU mismatch
+        device = next(self.parameters()).device
+        dummy = torch.zeros(1, self.in_channels, image_size, image_size, device=device)
         sizes: list[tuple[int, int]] = []
 
         with torch.no_grad():
