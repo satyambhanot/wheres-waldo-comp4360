@@ -522,6 +522,8 @@ def _train_pruned_model(
     criterion = SSDLoss(neg_pos_ratio=NEG_POS_RATIO, num_classes=NUM_CLASSES)
 
     best_val_ap: float = 0.0
+    # Track best weights so we evaluate the best epoch, not the last
+    best_state: dict[str, object] = {}
 
     for epoch in range(1, NUM_EPOCHS + 1):
         model.train()
@@ -556,6 +558,13 @@ def _train_pruned_model(
             )
             if val_ap > best_val_ap:
                 best_val_ap = val_ap
+                import copy
+
+                best_state = copy.deepcopy(model.state_dict())
+
+    # Restore best-epoch weights for evaluation
+    if best_state:
+        model.load_state_dict(best_state)  # type: ignore[arg-type]
 
     return best_val_ap
 
