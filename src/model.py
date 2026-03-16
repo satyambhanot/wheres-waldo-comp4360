@@ -419,6 +419,7 @@ class WaldoSSD(nn.Module):
         Returns:
             List of (height, width) tuples, one per active detection level.
         """
+        was_training = self.training
         self.eval()
         dummy = torch.zeros(1, self.in_channels, image_size, image_size)
         sizes: list[tuple[int, int]] = []
@@ -438,6 +439,10 @@ class WaldoSSD(nn.Module):
 
             for fmap in feature_maps:
                 sizes.append((fmap.size(2), fmap.size(3)))
+
+        # Restore original mode so callers aren't surprised
+        if was_training:
+            self.train()
 
         return sizes
 
