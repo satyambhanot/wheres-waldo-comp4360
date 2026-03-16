@@ -18,10 +18,12 @@ from torch.utils.data import DataLoader, Dataset
 
 from src.config import (
     BATCH_SIZE,
+    COLOR_MODES,
     DATA_PROCESSED,
     DEFAULT_COLOR_MODE,
     DEFAULT_RESOLUTION,
     DENSITY_THRESHOLD,
+    RESOLUTIONS,
 )
 from src.preprocess import dual_hsv_mask, edge_density, sobel_edges
 
@@ -65,10 +67,14 @@ class WaldoDataset(Dataset):
 
         Raises:
             FileNotFoundError: If splits.json or tile directory doesn't exist.
-            ValueError: If split name is invalid.
+            ValueError: If split, resolution, or color_mode is invalid.
         """
         if split not in ("train", "val", "test"):
             raise ValueError(f"Invalid split '{split}', must be 'train', 'val', or 'test'")
+        if resolution not in RESOLUTIONS:
+            raise ValueError(f"Invalid resolution {resolution}, must be one of {RESOLUTIONS}")
+        if color_mode not in COLOR_MODES:
+            raise ValueError(f"Invalid color_mode '{color_mode}', must be one of {COLOR_MODES}")
 
         self.resolution = resolution
         self.color_mode = color_mode
