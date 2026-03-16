@@ -439,75 +439,27 @@ def save_detection_examples(
                 boxes_px = boxes_filtered * resolution
 
                 gt_on_device = gt_boxes_px.to(device).float()
-                num_gt = gt_on_device.size(0) if gt_on_device.numel() > 0 else 0
 
-                if boxes_px.numel() == 0 and num_gt > 0:
-                    # All GT boxes are false negatives
-                    for g_idx in range(num_gt):
-                        fn_examples.append(
-                            (
-                                img_tensor,
-                                gt_on_device[g_idx].cpu().tolist(),
-                                gt_boxes_px,
-                            )
-                        )
-                    continue
+                # Reuse match_detections_to_gt for consistent logic
+                dets, unmatched_gt = match_detections_to_gt(boxes_px, scores_filtered, gt_on_device)
 
-                if boxes_px.numel() == 0:
-                    continue
-
-                if num_gt == 0:
-                    # All predictions are false positives
-                    for d_idx in range(boxes_px.size(0)):
-                        fp_examples.append(
-                            (
-                                scores_filtered[d_idx].item(),
-                                img_tensor,
-                                boxes_px[d_idx].cpu().tolist(),
-                                gt_boxes_px,
-                            )
-                        )
-                    continue
-
-                # Match detections to GT
-                iou_matrix = box_iou(boxes_px, gt_on_device)
-                gt_matched = torch.zeros(num_gt, dtype=torch.bool)
-
-                for d_idx in range(boxes_px.size(0)):
-                    best_iou, best_gt = iou_matrix[d_idx].max(dim=0)
+                # Classify each detection as TP or FP
+                for d_idx, (conf, is_tp) in enumerate(dets):
                     pred_box_list = boxes_px[d_idx].cpu().tolist()
-                    conf = scores_filtered[d_idx].item()
-
-                    if best_iou >= IOU_THRESHOLD and not gt_matched[best_gt]:
-                        gt_matched[best_gt] = True
-                        tp_examples.append(
-                            (
-                                conf,
-                                img_tensor,
-                                pred_box_list,
-                                gt_boxes_px,
-                            )
-                        )
+                    if is_tp:
+                        tp_examples.append((conf, img_tensor, pred_box_list, gt_boxes_px))
                     else:
-                        fp_examples.append(
-                            (
-                                conf,
-                                img_tensor,
-                                pred_box_list,
-                                gt_boxes_px,
-                            )
-                        )
+                        fp_examples.append((conf, img_tensor, pred_box_list, gt_boxes_px))
 
-                # Remaining unmatched GT are false negatives
-                for g_idx in range(num_gt):
-                    if not gt_matched[g_idx]:
-                        fn_examples.append(
-                            (
-                                img_tensor,
-                                gt_on_device[g_idx].cpu().tolist(),
-                                gt_boxes_px,
-                            )
+                # Unmatched GT boxes are false negatives
+                for g_idx in unmatched_gt:
+                    fn_examples.append(
+                        (
+                            img_tensor,
+                            gt_on_device[g_idx].cpu().tolist(),
+                            gt_boxes_px,
                         )
+                    )
 
     # --- Sort and select top examples ---
     # TPs: highest confidence correct detections
