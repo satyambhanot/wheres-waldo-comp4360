@@ -81,8 +81,10 @@ def generate_anchors(
                 cy = (row + 0.5) / fmap_h
 
                 for ratio in _ASPECT_RATIOS:
-                    w = scale * math.sqrt(ratio)
-                    h = scale / math.sqrt(ratio)
+                    # Clamp to [0, 1] because large scales with
+                    # non-square ratios can exceed image bounds
+                    w = min(scale * math.sqrt(ratio), 1.0)
+                    h = min(scale / math.sqrt(ratio), 1.0)
                     anchors.append(torch.tensor([cx, cy, w, h]))
 
     return torch.stack(anchors, dim=0)
@@ -528,6 +530,9 @@ if __name__ == "__main__":
     )
 
     # --- Test 4: All resolutions ---
+    # Use eval mode because 64px produces 1x1 feature maps where
+    # BatchNorm requires >1 element in training mode.
+    model_3ch.eval()
     for res in RESOLUTIONS:
         fmap_sizes = model_3ch.get_feature_map_sizes(res)
         anchors = model_3ch.get_anchors(res)
