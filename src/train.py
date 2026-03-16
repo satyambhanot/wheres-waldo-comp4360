@@ -18,25 +18,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
-from torchvision.ops import box_iou, nms
+from torchvision.ops import box_iou
 
 from src.config import (
     BATCH_SIZE,
     CHECKPOINTS,
-    CONFIDENCE_THRESHOLD,
     DEFAULT_COLOR_MODE,
     DEFAULT_RESOLUTION,
     DEVICE,
-    IOU_THRESHOLD,
     LEARNING_RATE,
     NEG_POS_RATIO,
-    NMS_THRESHOLD,
     NUM_CLASSES,
     NUM_EPOCHS,
     NUM_SSD_HEADS,
     WEIGHT_DECAY,
 )
 from src.dataset import get_dataloader
+from src.evaluate import _compute_voc_ap, apply_nms, match_detections_to_gt
 from src.model import WaldoSSD, decode_predictions
 
 logger = logging.getLogger(__name__)
@@ -57,9 +55,6 @@ _VAL_EVERY_N_EPOCHS: int = 5
 
 # Checkpoint save frequency in epochs
 _CHECKPOINT_EVERY_N_EPOCHS: int = 20
-
-# Number of recall points for PASCAL VOC 11-point AP interpolation
-_AP_RECALL_POINTS: int = 11
 
 
 def cxcywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
@@ -337,8 +332,9 @@ def evaluate(
 ) -> float:
     """Compute Average Precision on a dataset split.
 
-    Runs the model in eval mode, decodes predictions, applies NMS,
-    and computes PASCAL VOC 11-point interpolated AP.
+    Lightweight AP computation for validation during training. Delegates
+    to shared helpers from src.evaluate for NMS, detection matching,
+    and 11-point AP interpolation.
 
     Args:
         model: Trained WaldoSSD model.
@@ -352,7 +348,6 @@ def evaluate(
     """
     model.eval()
 
-    # Collect all detections and GT counts for AP computation
     all_detections: list[tuple[float, bool]] = []
     total_gt_boxes = 0
 
@@ -361,7 +356,6 @@ def evaluate(
             images = images.to(device)
             cls_preds, loc_preds = model(images)
 
-            # Softmax for confidence scores
             cls_probs = F.softmax(cls_preds, dim=-1)
             decoded_boxes = decode_predictions(loc_preds, anchors)
 
@@ -369,105 +363,20 @@ def evaluate(
                 gt_boxes_px = targets[b]["boxes"]
                 total_gt_boxes += gt_boxes_px.size(0)
 
-                # Waldo confidence (class 1)
                 scores = cls_probs[b, :, 1]
                 boxes = decoded_boxes[b]
 
-                # Filter by confidence threshold
-                keep_mask = scores > CONFIDENCE_THRESHOLD
-                scores = scores[keep_mask]
-                boxes = boxes[keep_mask]
+                boxes_filtered, scores_filtered = apply_nms(boxes, scores)
+                boxes_px = boxes_filtered * resolution
 
-                if scores.numel() == 0:
-                    continue
-
-                # NMS to remove duplicate detections
-                keep_nms = nms(boxes, scores, NMS_THRESHOLD)
-                scores = scores[keep_nms]
-                boxes = boxes[keep_nms]
-
-                # Convert to pixel coords for matching against GT
-                boxes_px = boxes * resolution
-
-                # Match detections to GT boxes
-                gt_matched = torch.zeros(gt_boxes_px.size(0), dtype=torch.bool)
-
-                if gt_boxes_px.numel() > 0:
-                    gt_on_device = gt_boxes_px.to(device).float()
-                    det_iou = box_iou(boxes_px, gt_on_device)
-
-                    for d_idx in range(boxes_px.size(0)):
-                        if det_iou.size(1) == 0:
-                            all_detections.append((scores[d_idx].item(), False))
-                            continue
-
-                        best_iou, best_gt = det_iou[d_idx].max(dim=0)
-
-                        if best_iou >= IOU_THRESHOLD and not gt_matched[best_gt]:
-                            all_detections.append((scores[d_idx].item(), True))
-                            gt_matched[best_gt] = True
-                        else:
-                            all_detections.append((scores[d_idx].item(), False))
-                else:
-                    # All detections are false positives
-                    for d_idx in range(scores.size(0)):
-                        all_detections.append((scores[d_idx].item(), False))
+                gt_on_device = gt_boxes_px.to(device).float()
+                dets, _ = match_detections_to_gt(boxes_px, scores_filtered, gt_on_device)
+                all_detections.extend(dets)
 
     ap = _compute_voc_ap(all_detections, total_gt_boxes)
 
     model.train()
     return ap
-
-
-def _compute_voc_ap(
-    detections: list[tuple[float, bool]],
-    total_gt: int,
-) -> float:
-    """Compute PASCAL VOC 11-point interpolated Average Precision.
-
-    Sorts detections by confidence, computes precision/recall curve,
-    then interpolates precision at 11 evenly spaced recall points.
-
-    Args:
-        detections: List of (confidence, is_true_positive) tuples.
-        total_gt: Total number of ground truth boxes in the dataset.
-
-    Returns:
-        AP value in [0.0, 1.0]. Returns 0.0 if no GT boxes exist.
-    """
-    if total_gt == 0:
-        return 0.0
-
-    # Sort by confidence descending
-    detections.sort(key=lambda x: x[0], reverse=True)
-
-    tp_cumsum = 0
-    fp_cumsum = 0
-    precisions: list[float] = []
-    recalls: list[float] = []
-
-    for _, is_tp in detections:
-        if is_tp:
-            tp_cumsum += 1
-        else:
-            fp_cumsum += 1
-
-        precision = tp_cumsum / (tp_cumsum + fp_cumsum)
-        recall = tp_cumsum / total_gt
-        precisions.append(precision)
-        recalls.append(recall)
-
-    # 11-point interpolation: for each recall threshold, take max precision
-    # at recall >= threshold (right-side maximum)
-    ap = 0.0
-    for r_thresh in [i / (_AP_RECALL_POINTS - 1) for i in range(_AP_RECALL_POINTS)]:
-        max_prec = 0.0
-        for p, r in zip(precisions, recalls):
-            if r >= r_thresh:
-                max_prec = max(max_prec, p)
-        ap += max_prec
-
-    return ap / _AP_RECALL_POINTS
 
 
 # =============================================================================
