@@ -12,7 +12,6 @@ Usage:
 
 import logging
 import math
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -200,7 +199,8 @@ def _make_head(
     num_outputs = _NUM_ANCHORS_PER_LOCATION * num_outputs_per_anchor
     conv = nn.Conv2d(in_channels, num_outputs, kernel_size=3, padding=1)
     nn.init.xavier_uniform_(conv.weight)
-    nn.init.zeros_(conv.bias)
+    if conv.bias is not None:
+        nn.init.zeros_(conv.bias)
     return conv
 
 
@@ -265,10 +265,18 @@ class WaldoSSD(nn.Module):
             self._adapt_first_conv(backbone, in_channels)
 
         # Split backbone .features into 4 stages for multi-scale extraction
-        self.stage1 = nn.Sequential(*list(backbone.features[_STAGE_SLICES[0][0]:_STAGE_SLICES[0][1]]))
-        self.stage2 = nn.Sequential(*list(backbone.features[_STAGE_SLICES[1][0]:_STAGE_SLICES[1][1]]))
-        self.stage3 = nn.Sequential(*list(backbone.features[_STAGE_SLICES[2][0]:_STAGE_SLICES[2][1]]))
-        self.stage4 = nn.Sequential(*list(backbone.features[_STAGE_SLICES[3][0]:_STAGE_SLICES[3][1]]))
+        self.stage1 = nn.Sequential(
+            *list(backbone.features[_STAGE_SLICES[0][0] : _STAGE_SLICES[0][1]])
+        )
+        self.stage2 = nn.Sequential(
+            *list(backbone.features[_STAGE_SLICES[1][0] : _STAGE_SLICES[1][1]])
+        )
+        self.stage3 = nn.Sequential(
+            *list(backbone.features[_STAGE_SLICES[2][0] : _STAGE_SLICES[2][1]])
+        )
+        self.stage4 = nn.Sequential(
+            *list(backbone.features[_STAGE_SLICES[3][0] : _STAGE_SLICES[3][1]])
+        )
 
         # --- Extra layers for additional detection scales ---
         self.extra1 = _make_extra_block(_BACKBONE_CHANNELS[3], 256, _EXTRA1_OUT)
@@ -281,12 +289,8 @@ class WaldoSSD(nn.Module):
         else:
             active_channels = _ALL_CHANNELS_6[2:]  # stage3 onward
 
-        self.cls_heads = nn.ModuleList([
-            _make_head(ch, num_classes) for ch in active_channels
-        ])
-        self.reg_heads = nn.ModuleList([
-            _make_head(ch, 4) for ch in active_channels
-        ])
+        self.cls_heads = nn.ModuleList([_make_head(ch, num_classes) for ch in active_channels])
+        self.reg_heads = nn.ModuleList([_make_head(ch, 4) for ch in active_channels])
 
         logger.info(
             "WaldoSSD initialized: %d classes, %d heads, %d-ch input, pretrained=%s",
@@ -312,13 +316,17 @@ class WaldoSSD(nn.Module):
             backbone: The MobileNetV3 model whose first conv to modify.
             in_channels: Desired number of input channels.
         """
-        old_conv = backbone.features[0][0]
+        # MobileNetV3 .features[0] is a ConvBNActivation block; [0][0] is the Conv2d
+        first_block = backbone.features[0]  # type: ignore[index]
+        old_conv = first_block[0]
+        assert isinstance(old_conv, nn.Conv2d)
+
         new_conv = nn.Conv2d(
             in_channels,
             old_conv.out_channels,
-            kernel_size=old_conv.kernel_size,
-            stride=old_conv.stride,
-            padding=old_conv.padding,
+            kernel_size=old_conv.kernel_size,  # type: ignore[arg-type]
+            stride=old_conv.stride,  # type: ignore[arg-type]
+            padding=old_conv.padding,  # type: ignore[arg-type]
             bias=old_conv.bias is not None,
         )
 
@@ -332,7 +340,7 @@ class WaldoSSD(nn.Module):
             if old_conv.bias is not None and new_conv.bias is not None:
                 new_conv.bias.copy_(old_conv.bias)
 
-        backbone.features[0][0] = new_conv
+        first_block[0] = new_conv  # type: ignore[assignment]
 
     def forward(
         self,
@@ -376,9 +384,7 @@ class WaldoSSD(nn.Module):
         loc_preds: list[torch.Tensor] = []
         batch_size = x.size(0)
 
-        for fmap, cls_head, reg_head in zip(
-            feature_maps, self.cls_heads, self.reg_heads
-        ):
+        for fmap, cls_head, reg_head in zip(feature_maps, self.cls_heads, self.reg_heads):
             # cls: (B, anchors_per_loc * num_classes, H, W)
             cls = cls_head(fmap)
             cls = cls.permute(0, 2, 3, 1).contiguous()
@@ -476,9 +482,9 @@ if __name__ == "__main__":
     anchors_256 = model_3ch.get_anchors(256)
 
     assert cls_out.size(0) == 2, "Batch size mismatch"
-    assert cls_out.size(1) == anchors_256.size(0), (
-        f"Anchor count mismatch: cls={cls_out.size(1)}, anchors={anchors_256.size(0)}"
-    )
+    assert cls_out.size(1) == anchors_256.size(
+        0
+    ), f"Anchor count mismatch: cls={cls_out.size(1)}, anchors={anchors_256.size(0)}"
     assert cls_out.size(2) == NUM_CLASSES, "Class dim mismatch"
     assert loc_out.size(2) == 4, "Loc dim mismatch"
     logger.info(
@@ -523,9 +529,9 @@ if __name__ == "__main__":
         x_res = torch.randn(1, 3, res, res)
         cls_r, loc_r = model_3ch(x_res)
 
-        assert cls_r.size(1) == anchors.size(0), (
-            f"Resolution {res}: cls={cls_r.size(1)} != anchors={anchors.size(0)}"
-        )
+        assert cls_r.size(1) == anchors.size(
+            0
+        ), f"Resolution {res}: cls={cls_r.size(1)} != anchors={anchors.size(0)}"
         logger.info(
             "  %dpx: fmap_sizes=%s, anchors=%d",
             res,
@@ -535,9 +541,7 @@ if __name__ == "__main__":
 
     # --- Test 5: Decode predictions ---
     decoded = decode_predictions(loc_out, anchors_256)
-    assert decoded.shape == (2, anchors_256.size(0), 4), (
-        f"Decode shape mismatch: {decoded.shape}"
-    )
+    assert decoded.shape == (2, anchors_256.size(0), 4), f"Decode shape mismatch: {decoded.shape}"
     logger.info("  decode_predictions: %s", list(decoded.shape))
 
     # --- Test 6: Feature map sizes ---
