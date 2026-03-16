@@ -197,21 +197,22 @@ class WaldoDataset(Dataset):
         # --- Load bounding boxes ---
         boxes = self._load_boxes(tile_path)
 
-        # --- Data augmentation (training only) ---
-        if self.augment:
-            img, boxes = self._augment(img, boxes)
-
-        # --- Color mode conversion ---
-        img = self._apply_color_mode(img)
-
-        # --- Compute Sobel before converting to tensor ---
-        # Sobel needs BGR input, so convert back temporarily
+        # --- Compute Sobel on original color data BEFORE color mode conversion ---
+        # HSV masking needs real RGB/BGR color channels; grayscale/BW
+        # modes destroy that information, so Sobel must come first.
         sobel_channel: Optional[np.ndarray] = None
         if self.use_sobel:
             bgr_for_sobel = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
             mask = dual_hsv_mask(bgr_for_sobel)
             sobel_out = sobel_edges(bgr_for_sobel, mask)
             sobel_channel = sobel_out.astype(np.float32) / 255.0
+
+        # --- Data augmentation (training only) ---
+        if self.augment:
+            img, boxes, sobel_channel = self._augment(img, boxes, sobel_channel)
+
+        # --- Color mode conversion ---
+        img = self._apply_color_mode(img)
 
         # --- Convert to tensor ---
         img_float = img.astype(np.float32) / 255.0
@@ -304,18 +305,21 @@ class WaldoDataset(Dataset):
         self,
         img: np.ndarray,
         boxes: list[list[float]],
-    ) -> tuple[np.ndarray, list[list[float]]]:
-        """Apply random augmentations to image and bounding boxes.
+        sobel_channel: Optional[np.ndarray] = None,
+    ) -> tuple[np.ndarray, list[list[float]], Optional[np.ndarray]]:
+        """Apply random augmentations to image, boxes, and Sobel channel.
 
         Currently supports horizontal flip and color jitter. Box
-        coordinates are transformed to match the augmented image.
+        coordinates and the Sobel channel are transformed to match
+        the augmented image.
 
         Args:
             img: RGB image array (H, W, 3).
             boxes: List of [xmin, ymin, xmax, ymax] in pixel coords.
+            sobel_channel: Optional Sobel edge map (H, W) float32.
 
         Returns:
-            Tuple of (augmented_image, augmented_boxes).
+            Tuple of (augmented_image, augmented_boxes, augmented_sobel).
         """
         h, w = img.shape[:2]
 
@@ -323,6 +327,8 @@ class WaldoDataset(Dataset):
         if np.random.random() > 0.5:
             img = np.fliplr(img).copy()
             boxes = [[w - b[2], b[1], w - b[0], b[3]] for b in boxes]
+            if sobel_channel is not None:
+                sobel_channel = np.fliplr(sobel_channel).copy()
 
         # --- Color jitter (50% chance, only for color mode) ---
         if self.color_mode == "color" and np.random.random() > 0.5:
@@ -333,7 +339,7 @@ class WaldoDataset(Dataset):
             hsv = np.clip(hsv, 0, 255).astype(np.uint8)
             img = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
 
-        return img, boxes
+        return img, boxes, sobel_channel
 
 
 # =============================================================================
