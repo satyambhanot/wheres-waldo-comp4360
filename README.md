@@ -17,9 +17,7 @@ cd wheres-waldo-comp4360
 # 2. Set up the environment
 make setup
 
-# 3. Place raw images in data/raw/ (see Data Setup below)
-
-# 4. Train the model
+# 3. Train the model (data is pre-included)
 make train
 
 # 5. Evaluate on test set
