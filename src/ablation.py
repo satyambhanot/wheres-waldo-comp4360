@@ -1,9 +1,9 @@
-"""Ablation experiment runner for systematic WaldoSSD evaluation.
+"""Runs all our "what if we changed X?" experiments.
 
-Executes 4 ablation studies (Sobel bypass, resolution, color mode, model
-size) with full reproducibility, JSON result logging, and resumability.
-Each experiment trains a model variant, evaluates on the test set, and
-records metrics plus efficiency measurements.
+Four ablation studies test how Sobel edges, tile resolution, colour
+mode, and model size each affect detection quality.  Every experiment
+is reproducible (seeded), resumable (skips finished runs), and logs
+its metrics to JSON.
 
 Usage:
     python -m src.ablation                  # run all experiments
@@ -43,35 +43,33 @@ from src.train import train
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# CONSTANTS
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
 
 _SEED: int = 42
 
-# Inference timing parameters
-_WARMUP_PASSES: int = 10
-_TIMED_PASSES: int = 100
+# For timing: warm up the GPU, then time this many passes
+_WARMUP_RUNS: int = 10
+_TIMED_RUNS: int = 100
 
-# Pruning ratio for ablation 4
-_PRUNE_RATIO: float = 0.5
+# How much to shrink the extra blocks in the pruning experiment
+_CHANNEL_PRUNE_FRACTION: float = 0.5
 
-# The baseline config key that other studies share
+# The "default" experiment — other studies that match it skip retraining
 _BASELINE_KEY: str = "abl2_res256"
-
-# Experiment keys that are identical to baseline (avoid retraining)
 _BASELINE_ALIASES: list[str] = ["abl1_sobel_on", "abl3_color", "abl4_6heads"]
 
-# Output directory for ablation results
+# Where to save per-experiment JSON files
 _ABLATION_DIR: Path = RESULTS / "ablations"
 
 
-# =============================================================================
-# EXPERIMENT DEFINITIONS
-# =============================================================================
+# ---------------------------------------------------------------------------
+# What each experiment looks like
+# ---------------------------------------------------------------------------
 
 EXPERIMENTS: dict[str, dict[str, Any]] = {
-    # --- Ablation 1: Sobel Edge Bypass ---
+    # --- Ablation 1: Does the Sobel edge channel help? ---
     "abl1_sobel_on": {
         "name": "Ablation 1 - Sobel ON (baseline)",
         "config": {
@@ -90,7 +88,7 @@ EXPERIMENTS: dict[str, dict[str, Any]] = {
             "num_heads": NUM_SSD_HEADS,
         },
     },
-    # --- Ablation 2: Image Resolution ---
+    # --- Ablation 2: Does tile size matter? ---
     "abl2_res256": {
         "name": "Ablation 2 - 256px (baseline)",
         "config": {
@@ -118,7 +116,7 @@ EXPERIMENTS: dict[str, dict[str, Any]] = {
             "num_heads": NUM_SSD_HEADS,
         },
     },
-    # --- Ablation 3: Color Information ---
+    # --- Ablation 3: How important is colour? ---
     "abl3_color": {
         "name": "Ablation 3 - Color (baseline)",
         "config": {
@@ -146,7 +144,7 @@ EXPERIMENTS: dict[str, dict[str, Any]] = {
             "num_heads": NUM_SSD_HEADS,
         },
     },
-    # --- Ablation 4: Model Size ---
+    # --- Ablation 4: Can we shrink the model without losing quality? ---
     "abl4_6heads": {
         "name": "Ablation 4 - 6 heads (baseline)",
         "config": {
@@ -172,13 +170,13 @@ EXPERIMENTS: dict[str, dict[str, Any]] = {
             "color_mode": DEFAULT_COLOR_MODE,
             "use_sobel": True,
             "num_heads": NUM_SSD_HEADS,
-            "filter_prune_ratio": _PRUNE_RATIO,
+            "filter_prune_ratio": _CHANNEL_PRUNE_FRACTION,
         },
     },
 }
 
-# Execution order: resolution first (validates pipeline), then Sobel,
-# color, model size. Baseline trains once via abl2_res256, aliases copy it.
+# Run resolution first (validates the whole pipeline), then the rest.
+# The baseline trains once; aliases just copy its checkpoint.
 _EXECUTION_ORDER: list[str] = [
     "abl2_res256",
     "abl2_res128",
@@ -194,17 +192,13 @@ _EXECUTION_ORDER: list[str] = [
 ]
 
 
-# =============================================================================
-# REPRODUCIBILITY
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Reproducibility
+# ---------------------------------------------------------------------------
 
 
 def set_seed(seed: int = _SEED) -> None:
-    """Set random seeds for full reproducibility across runs.
-
-    Configures Python, NumPy, and PyTorch RNGs, plus disables cuDNN
-    non-deterministic algorithms. This guarantees identical results
-    when rerunning the same experiment.
+    """Lock down every random number generator so results are repeatable.
 
     Args:
         seed: Random seed value (default 42).
@@ -214,34 +208,34 @@ def set_seed(seed: int = _SEED) -> None:
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-    # Disable non-deterministic cuDNN algorithms
+    # Force deterministic behaviour on NVIDIA GPUs
     torch.backends.cudnn.deterministic = True  # type: ignore[attr-defined]
     torch.backends.cudnn.benchmark = False  # type: ignore[attr-defined]
 
 
-# =============================================================================
-# PRUNED MODEL CREATION
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Building a slimmed-down model for the pruning experiment
+# ---------------------------------------------------------------------------
 
 
 def create_pruned_model(
     num_classes: int = NUM_CLASSES,
     in_channels: int = 3,
-    prune_ratio: float = _PRUNE_RATIO,
+    prune_ratio: float = _CHANNEL_PRUNE_FRACTION,
 ) -> WaldoSSD:
-    """Create a WaldoSSD with pruned extra convolutional layers.
+    """Build a WaldoSSD with fewer channels in the extra blocks.
 
-    Reduces the channel count in extra1 and extra2 blocks by the prune
-    ratio, producing a smaller model for the model-size ablation study.
-    The backbone remains untouched since it uses pretrained weights.
+    The backbone stays full-size (pretrained weights are valuable),
+    but we thin out the extra convolutional layers to see how much
+    model capacity we actually need.
 
     Args:
         num_classes: Number of object classes (background + Waldo = 2).
         in_channels: Number of input channels (3 for RGB, 4 for RGB+Sobel).
-        prune_ratio: Fraction of channels to remove (0.5 = 50% reduction).
+        prune_ratio: Fraction of channels to chop (0.5 = half the channels).
 
     Returns:
-        WaldoSSD model with pruned extra layers and updated detection heads.
+        WaldoSSD model with smaller extra layers and matching heads.
     """
     model = WaldoSSD(
         num_classes=num_classes,
@@ -249,15 +243,15 @@ def create_pruned_model(
         in_channels=in_channels,
     )
 
-    # Compute pruned channel counts (round to nearest int)
+    # Figure out how many channels survive the pruning
     extra1_out = int(512 * (1.0 - prune_ratio))
     extra2_out = int(256 * (1.0 - prune_ratio))
 
-    # Replace extra layers with smaller versions
+    # Swap in the thinner blocks
     model.extra1 = _make_extra_block(960, int(256 * (1.0 - prune_ratio)), extra1_out)
     model.extra2 = _make_extra_block(extra1_out, int(128 * (1.0 - prune_ratio)), extra2_out)
 
-    # Rebuild detection heads to match new channel counts
+    # Detection heads need to match the new channel widths
     all_channels = [24, 40, 112, 960, extra1_out, extra2_out]
     model.cls_heads = nn.ModuleList([_make_head(ch, num_classes) for ch in all_channels])
     model.reg_heads = nn.ModuleList([_make_head(ch, 4) for ch in all_channels])
@@ -272,9 +266,9 @@ def create_pruned_model(
     return model
 
 
-# =============================================================================
-# INFERENCE TIMING
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Speed benchmarking
+# ---------------------------------------------------------------------------
 
 
 def measure_inference_time(
@@ -282,10 +276,10 @@ def measure_inference_time(
     resolution: int,
     device: torch.device,
 ) -> float:
-    """Measure average inference time per tile in milliseconds.
+    """How many milliseconds does one forward pass take?
 
-    Runs warmup passes to stabilize GPU state, then times a fixed
-    number of forward passes with proper device synchronization.
+    We warm up the GPU first (clocks, caches), then time a batch of
+    runs with proper synchronisation.
 
     Args:
         model: WaldoSSD model to benchmark.
@@ -298,12 +292,12 @@ def measure_inference_time(
     model.eval()
     dummy = torch.randn(1, model.in_channels, resolution, resolution, device=device)
 
-    # Warmup to stabilize GPU clock and caches
+    # Let the hardware settle before we start the stopwatch
     with torch.no_grad():
-        for _ in range(_WARMUP_PASSES):
+        for _ in range(_WARMUP_RUNS):
             model(dummy)
 
-    # Synchronize before timing
+    # Make sure all async ops are done before timing
     if device.type == "mps":
         torch.mps.synchronize()
     elif device.type == "cuda":
@@ -311,7 +305,7 @@ def measure_inference_time(
 
     start = time.perf_counter()
     with torch.no_grad():
-        for _ in range(_TIMED_PASSES):
+        for _ in range(_TIMED_RUNS):
             model(dummy)
 
     if device.type == "mps":
@@ -320,23 +314,23 @@ def measure_inference_time(
         torch.cuda.synchronize()
 
     elapsed_ms = (time.perf_counter() - start) * 1000
-    return elapsed_ms / _TIMED_PASSES
+    return elapsed_ms / _TIMED_RUNS
 
 
-# =============================================================================
-# SINGLE EXPERIMENT RUNNER
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Running a single experiment
+# ---------------------------------------------------------------------------
 
 
 def run_experiment(
     exp_key: str,
     exp_def: dict[str, Any],
 ) -> dict[str, Any]:
-    """Train and evaluate a single ablation experiment.
+    """Train, evaluate, and benchmark one ablation configuration.
 
-    Checks for existing results (resumability), trains the model, runs
-    test-set evaluation, measures inference time, and saves everything
-    to a JSON file.
+    If the result JSON already exists on disk, we skip everything
+    (resumability).  Otherwise we train the model, test it, time
+    its inference, and write the results out.
 
     Args:
         exp_key: Unique experiment identifier (e.g., 'abl2_res128').
@@ -348,7 +342,7 @@ def run_experiment(
     _ABLATION_DIR.mkdir(parents=True, exist_ok=True)
     result_path = _ABLATION_DIR / f"{exp_key}.json"
 
-    # --- Resumability: skip if result already exists ---
+    # Already done? Skip it.
     if result_path.exists():
         with open(result_path) as f:
             existing = json.load(f)
@@ -372,14 +366,13 @@ def run_experiment(
 
     is_pruned = prune_ratio > 0.0
 
-    # --- Train ---
+    # --- Train the model ---
     best_ckpt_path = CHECKPOINTS / "best_model.pth"
     train_start = time.time()
 
     if is_pruned:
-        # Pruned model has different extra-layer dimensions, so train()
-        # (which builds its own model) can't be used. Train directly
-        # with the pruned architecture via _train_pruned_model.
+        # The pruned model has custom layer sizes, so the standard
+        # train() function won't work — we handle it ourselves.
         model = create_pruned_model(
             num_classes=NUM_CLASSES,
             in_channels=in_channels,
@@ -393,7 +386,7 @@ def run_experiment(
     else:
         best_val_ap = train(config_overrides=config)
 
-        # Reload best checkpoint for evaluation
+        # Load the best checkpoint back in for evaluation
         model = WaldoSSD(
             num_classes=NUM_CLASSES,
             num_heads=num_heads,
@@ -405,12 +398,12 @@ def run_experiment(
 
     training_time_min = (time.time() - train_start) / 60.0
 
-    # Generate anchors on CPU, then move everything to device
+    # Anchors on CPU first, then ship everything to the device
     anchors = model.get_anchors(resolution)
     model = model.to(DEVICE)
     anchors = anchors.to(DEVICE)
 
-    # --- Test set evaluation ---
+    # --- See how well it does on the test set ---
     test_loader = get_dataloader(
         split="test",
         resolution=resolution,
@@ -422,13 +415,13 @@ def run_experiment(
 
     metrics = evaluate_detailed(model, test_loader, anchors, resolution, DEVICE)
 
-    # --- Inference timing ---
+    # --- How fast is it? ---
     inference_ms = measure_inference_time(model, resolution, DEVICE)
 
-    # --- Parameter count ---
+    # --- How big is it? ---
     param_count = sum(p.numel() for p in model.parameters())
 
-    # --- Compile result ---
+    # --- Bundle everything into a result dict ---
     result: dict[str, Any] = {
         "experiment_key": exp_key,
         "experiment_name": exp_def["name"],
@@ -451,12 +444,12 @@ def run_experiment(
         },
     }
 
-    # --- Save result JSON ---
+    # Write the results to disk
     with open(result_path, "w") as f:
         json.dump(result, f, indent=2)
     logger.info("Saved result to %s", result_path)
 
-    # --- Save experiment-specific checkpoint ---
+    # Keep a copy of the checkpoint tagged with the experiment name
     exp_ckpt_path = CHECKPOINTS / f"{exp_key}_best.pth"
     if best_ckpt_path.exists() and not is_pruned:
         shutil.copy2(best_ckpt_path, exp_ckpt_path)
@@ -472,11 +465,10 @@ def _train_pruned_model(
     anchors: torch.Tensor,
     config: dict[str, Any],
 ) -> float:
-    """Train a pruned WaldoSSD model using the standard training loop internals.
+    """Train the pruned model (its custom layers mean we can't use train()).
 
-    Since the pruned model has different layer dimensions, we can't use
-    train() directly (it constructs its own model). Instead, we replicate
-    the essential training logic here with the pre-built pruned model.
+    This is a stripped-down copy of the main training loop, just enough
+    to get the pruned model trained and validated.
 
     Args:
         model: Pre-constructed pruned WaldoSSD already on DEVICE.
@@ -523,7 +515,7 @@ def _train_pruned_model(
     criterion = SSDLoss(neg_pos_ratio=NEG_POS_RATIO, num_classes=NUM_CLASSES)
 
     best_val_ap: float = 0.0
-    # Track best weights so we evaluate the best epoch, not the last
+    # Remember the best weights so we evaluate the peak, not the end
     best_state: dict[str, object] = {}
 
     for epoch in range(1, NUM_EPOCHS + 1):
@@ -561,24 +553,23 @@ def _train_pruned_model(
                 best_val_ap = val_ap
                 best_state = copy.deepcopy(model.state_dict())
 
-    # Restore best-epoch weights for evaluation
+    # Roll back to the weights that scored highest on validation
     if best_state:
         model.load_state_dict(best_state)  # type: ignore[arg-type]
 
     return best_val_ap
 
 
-# =============================================================================
-# RUN ALL EXPERIMENTS
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Running every experiment in one go
+# ---------------------------------------------------------------------------
 
 
 def run_all() -> dict[str, Any]:
-    """Execute all ablation experiments in recommended order.
+    """Train the baseline, then run every variant and compare.
 
-    Trains the baseline once, copies results for identical experiment
-    configs, and runs each unique variant. Saves a combined results
-    file for easy comparison.
+    Identical configs get their results copied from the baseline
+    instead of retraining, saving a lot of time.
 
     Returns:
         Dict mapping experiment keys to their result dicts.
@@ -587,22 +578,22 @@ def run_all() -> dict[str, Any]:
     CHECKPOINTS.mkdir(parents=True, exist_ok=True)
     all_results: dict[str, Any] = {}
 
-    total_unique = len(_EXECUTION_ORDER) - len(_BASELINE_ALIASES)
+    unique_experiments = len(_EXECUTION_ORDER) - len(_BASELINE_ALIASES)
     logger.info(
         "Running %d experiments (%d unique + %d baseline aliases)",
         len(_EXECUTION_ORDER),
-        total_unique,
+        unique_experiments,
         len(_BASELINE_ALIASES),
     )
 
     for exp_key in _EXECUTION_ORDER:
-        # Check if this is a baseline alias that can be copied
+        # If this experiment is identical to the baseline, just copy results
         if exp_key in _BASELINE_ALIASES:
             baseline_path = _ABLATION_DIR / f"{_BASELINE_KEY}.json"
             alias_path = _ABLATION_DIR / f"{exp_key}.json"
 
             if baseline_path.exists() and not alias_path.exists():
-                # Copy baseline result with updated key and name
+                # Clone the baseline result, just rename it
                 with open(baseline_path) as f:
                     baseline_result = json.load(f)
 
@@ -615,7 +606,7 @@ def run_all() -> dict[str, Any]:
                 with open(alias_path, "w") as f:
                     json.dump(alias_result, f, indent=2)
 
-                # Copy checkpoint too
+                # Same for the checkpoint file
                 src_ckpt = CHECKPOINTS / f"{_BASELINE_KEY}_best.pth"
                 dst_ckpt = CHECKPOINTS / f"{exp_key}_best.pth"
                 if src_ckpt.exists() and not dst_ckpt.exists():
@@ -632,7 +623,7 @@ def run_all() -> dict[str, Any]:
         result = run_experiment(exp_key, EXPERIMENTS[exp_key])
         all_results[exp_key] = result
 
-    # --- Save combined results ---
+    # Write one big JSON with everything for easy comparison
     combined_path = _ABLATION_DIR / "all_results.json"
     with open(combined_path, "w") as f:
         json.dump(all_results, f, indent=2)
@@ -642,16 +633,15 @@ def run_all() -> dict[str, Any]:
     return all_results
 
 
-# =============================================================================
-# RESULTS SUMMARY
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Pretty-printed comparison table
+# ---------------------------------------------------------------------------
 
 
 def print_results_summary(all_results: dict[str, Any]) -> None:
-    """Log a formatted comparison table of all experiment results.
+    """Print a side-by-side comparison of every experiment to the log.
 
-    Groups results by ablation study for easy side-by-side comparison
-    in terminal output.
+    Grouped by ablation study so you can see the effect at a glance.
 
     Args:
         all_results: Dict mapping experiment keys to result dicts.
@@ -673,7 +663,6 @@ def print_results_summary(all_results: dict[str, Any]) -> None:
     )
     logger.info("-" * 90)
 
-    # Group by ablation study prefix
     ablation_groups = [
         ("Ablation 1 - Sobel", ["abl1_sobel_on", "abl1_sobel_off"]),
         ("Ablation 2 - Resolution", ["abl2_res256", "abl2_res128", "abl2_res64"]),
@@ -708,9 +697,9 @@ def print_results_summary(all_results: dict[str, Any]) -> None:
     logger.info("=" * 90)
 
 
-# =============================================================================
-# MAIN
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 
 if __name__ == "__main__":

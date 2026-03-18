@@ -1,10 +1,10 @@
-"""Tiling pipeline and preprocessing for detection training data.
+"""Chops full-size Waldo illustrations into bite-sized tiles for training.
 
-Takes 19 original Where's Waldo illustrations with Pascal VOC
-bounding box annotations and generates overlapping tiles at
-64/128/256 resolutions with per-tile YOLO-format labels. Also
-provides HSV masking, Sobel edge detection, and density filtering
-for the preprocessing pipeline used during training.
+We take each of the 19 original puzzle images, slide a window across
+them at three zoom levels (64 / 128 / 256 px), and save every tile
+with a matching YOLO label file. On top of that, there are helpers
+for colour-based masking (to spot red-and-white stripes) and Sobel
+edge detection (to highlight stripe boundaries).
 """
 
 import json
@@ -40,16 +40,16 @@ from src.config import (
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# ANNOTATION PARSING
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Reading annotation files
+# ---------------------------------------------------------------------------
 
 
 def parse_voc_annotation(xml_path: Path) -> dict:
-    """Parse a Pascal VOC XML annotation file.
+    """Read a Pascal VOC XML file and pull out the bounding boxes.
 
-    Extracts image dimensions and all object bounding boxes from a
-    standard Pascal VOC format XML file.
+    Each annotation file tells us how big the image is and where
+    Waldo (or any other labelled object) sits inside it.
 
     Args:
         xml_path: Path to the .xml annotation file.
@@ -71,7 +71,7 @@ def parse_voc_annotation(xml_path: Path) -> dict:
     tree = ET.parse(xml_path)
     root = tree.getroot()
 
-    # --- Extract image metadata ---
+    # Grab the basic image info (name, width, height)
     filename_elem = root.find("filename")
     size_elem = root.find("size")
     if filename_elem is None or size_elem is None:
@@ -82,7 +82,7 @@ def parse_voc_annotation(xml_path: Path) -> dict:
     if width == 0 or height == 0:
         raise ValueError(f"Invalid image dimensions in {xml_path}: {width}x{height}")
 
-    # --- Extract bounding boxes ---
+    # Now collect every bounding box in the file
     boxes: list[list[int]] = []
     for obj in root.findall("object"):
         bndbox = obj.find("bndbox")
@@ -112,16 +112,16 @@ def parse_voc_annotation(xml_path: Path) -> dict:
     }
 
 
-# =============================================================================
-# GEOMETRY UTILITIES
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Geometry helpers
+# ---------------------------------------------------------------------------
 
 
 def compute_iou(box_a: list[int], box_b: list[int]) -> float:
-    """Compute Intersection over Union between two bounding boxes.
+    """How much do two boxes overlap?  (Intersection / Union).
 
-    Both boxes are in [xmin, ymin, xmax, ymax] pixel coordinate format.
-    Returns 0.0 if there is no overlap.
+    Both boxes use [xmin, ymin, xmax, ymax] pixel coordinates.
+    Returns 0.0 when the boxes don't touch at all.
 
     Args:
         box_a: First bounding box [xmin, ymin, xmax, ymax].
@@ -147,12 +147,12 @@ def compute_iou(box_a: list[int], box_b: list[int]) -> float:
 
 
 def compute_overlap_ratio(waldo_box: list[int], tile_box: list[int]) -> float:
-    """Compute what fraction of the Waldo box is inside the tile.
+    """What fraction of Waldo is visible inside this tile?
 
-    This is different from IoU — it measures how much of Waldo is
-    visible in this tile, which is more relevant for detection labels
-    than symmetric IoU. A tile that contains 80% of Waldo should be
-    labeled positive even if the tile is much larger than Waldo.
+    Unlike IoU (which is symmetric), this asks: "if I cropped the
+    image to just this tile, how much of Waldo would I still see?"
+    A tile showing 80 % of Waldo should count as positive even when
+    the tile is way bigger than Waldo himself.
 
     Args:
         waldo_box: Waldo bounding box [xmin, ymin, xmax, ymax].
@@ -179,10 +179,11 @@ def clip_box_to_tile(
     waldo_box: list[int],
     tile_box: list[int],
 ) -> list[int]:
-    """Clip a Waldo bounding box to tile boundaries and make tile-relative.
+    """Trim Waldo's box to fit inside a tile and shift it to tile-local coords.
 
-    Converts absolute pixel coordinates to coordinates relative to the
-    tile's top-left corner. Clips any portion that extends outside the tile.
+    If Waldo hangs over the edge of the tile, we clip the box so only
+    the visible part remains, then re-express coordinates relative to
+    the tile's own top-left corner.
 
     Args:
         waldo_box: Waldo box in absolute coords [xmin, ymin, xmax, ymax].
@@ -199,31 +200,31 @@ def clip_box_to_tile(
     return [rel_xmin, rel_ymin, rel_xmax, rel_ymax]
 
 
-def format_yolo_line(class_id: int, box: list[int], resolution: int) -> str:
-    """Convert a pixel-coordinate box to YOLO annotation format.
+def format_yolo_line(class_id: int, box: list[int], tile_size: int) -> str:
+    """Turn a pixel-coordinate box into a YOLO annotation line.
 
-    YOLO format: class_id center_x center_y width height
-    All values normalized to [0, 1] relative to tile dimensions.
+    YOLO wants: class_id  centre_x  centre_y  width  height
+    with every value normalised to [0, 1] relative to the tile.
 
     Args:
         class_id: Object class (0 for Waldo).
         box: Box in tile-relative pixel coords [xmin, ymin, xmax, ymax].
-        resolution: Tile size in pixels (used for normalization).
+        tile_size: Tile size in pixels (used for normalization).
 
     Returns:
         YOLO-format annotation string.
     """
-    cx = (box[0] + box[2]) / 2.0 / resolution
-    cy = (box[1] + box[3]) / 2.0 / resolution
-    bw = (box[2] - box[0]) / resolution
-    bh = (box[3] - box[1]) / resolution
+    centre_x = (box[0] + box[2]) / 2.0 / tile_size
+    centre_y = (box[1] + box[3]) / 2.0 / tile_size
+    box_width = (box[2] - box[0]) / tile_size
+    box_height = (box[3] - box[1]) / tile_size
 
-    return f"{class_id} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}"
+    return f"{class_id} {centre_x:.6f} {centre_y:.6f} {box_width:.6f} {box_height:.6f}"
 
 
-# =============================================================================
-# TILING PIPELINE
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Tiling pipeline
+# ---------------------------------------------------------------------------
 
 
 def tile_single_image(
@@ -232,12 +233,12 @@ def tile_single_image(
     output_dir: Path,
     resolution: int,
 ) -> tuple[int, int]:
-    """Tile a single high-res Waldo image into fixed-size detection tiles.
+    """Chop one high-res Waldo illustration into small square tiles.
 
-    Slides a window of size (resolution x resolution) across the original
-    image with configurable overlap. Each tile is saved as a .jpg file,
-    and its YOLO-format annotation is saved as a matching .txt file.
-    Negative tiles (no Waldo) get empty .txt files.
+    A sliding window moves across the image with a little overlap so
+    Waldo is never awkwardly cut in half at a tile boundary.  Every
+    tile is saved as a .jpg, and a matching .txt holds its YOLO label
+    (empty for background-only tiles).
 
     Args:
         image_path: Path to the original .jpg image.
@@ -259,7 +260,7 @@ def tile_single_image(
     if resolution not in RESOLUTIONS:
         raise ValueError(f"Invalid resolution {resolution}, must be one of {RESOLUTIONS}")
 
-    # --- Load image and annotation ---
+    # Load the full-size image and its Waldo locations
     img = cv2.imread(str(image_path))
     if img is None:
         raise ValueError(f"Failed to read image: {image_path}")
@@ -268,22 +269,22 @@ def tile_single_image(
     waldo_boxes = annotation["boxes"]
     img_h, img_w = img.shape[:2]
 
-    # Overlap prevents Waldo from being split at tile boundaries
+    # A little overlap between neighbouring tiles keeps Waldo whole
     stride = int(resolution * (1.0 - TILE_OVERLAP))
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    base_name = image_path.stem
-    tile_id = 0
-    pos_count = 0
-    neg_count = 0
+    image_name = image_path.stem
+    tile_number = 0
+    waldo_tiles = 0
+    background_tiles = 0
 
-    # --- Slide window across image ---
+    # Walk the sliding window across the whole image
     for y in range(0, img_h - resolution + 1, stride):
         for x in range(0, img_w - resolution + 1, stride):
             tile = img[y : y + resolution, x : x + resolution]
             tile_box = [x, y, x + resolution, y + resolution]
 
-            # --- Check each Waldo box for overlap with this tile ---
+            # Does this tile contain (enough of) Waldo?
             label_lines: list[str] = []
             for waldo_box in waldo_boxes:
                 overlap = compute_overlap_ratio(waldo_box, tile_box)
@@ -293,43 +294,42 @@ def tile_single_image(
                     yolo_line = format_yolo_line(0, clipped, resolution)
                     label_lines.append(yolo_line)
 
-            # --- Save tile image and label ---
-            tile_name = f"{base_name}_tile_{tile_id:05d}"
+            # Write the tile image and its label file to disk
+            tile_name = f"{image_name}_tile_{tile_number:05d}"
             cv2.imwrite(str(output_dir / f"{tile_name}.jpg"), tile)
 
             with open(output_dir / f"{tile_name}.txt", "w") as f:
                 f.write("\n".join(label_lines))
 
             if label_lines:
-                pos_count += 1
+                waldo_tiles += 1
             else:
-                neg_count += 1
+                background_tiles += 1
 
-            tile_id += 1
+            tile_number += 1
 
     logger.info(
-        "Image %s @ %dpx: %d tiles (%d positive, %d negative)",
-        base_name,
+        "Image %s @ %dpx: %d tiles (%d with Waldo, %d background)",
+        image_name,
         resolution,
-        tile_id,
-        pos_count,
-        neg_count,
+        tile_number,
+        waldo_tiles,
+        background_tiles,
     )
 
-    return pos_count, neg_count
+    return waldo_tiles, background_tiles
 
 
-# =============================================================================
-# TRAIN / VAL / TEST SPLIT
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Train / validation / test split
+# ---------------------------------------------------------------------------
 
 
 def create_splits(processed_dir: Path) -> dict[str, list[str]]:
-    """Create reproducible train/val/test splits by original image.
+    """Divide the original images into train, val, and test groups.
 
-    Splits are done by original image name (not by tile) to prevent
-    data leakage — tiles from the same source image must all be in
-    the same split.
+    We split at the *image* level, not the tile level, so tiles from
+    the same puzzle picture never leak across splits.
 
     Args:
         processed_dir: Path to data/processed/ directory. The splits
@@ -339,7 +339,7 @@ def create_splits(processed_dir: Path) -> dict[str, list[str]]:
         Dictionary mapping split name to list of original image stems.
         Example: {'train': ['1','3','5',...], 'val': ['2','7'], 'test': ['4','9']}.
     """
-    # --- Collect unique original image names from 256px tiles ---
+    # Figure out which original images we have by looking at tile names
     tile_dir = processed_dir / str(RESOLUTIONS[-1])
     if not tile_dir.exists():
         raise FileNotFoundError(f"Tile directory not found: {tile_dir}. Run tiling pipeline first.")
@@ -349,21 +349,21 @@ def create_splits(processed_dir: Path) -> dict[str, list[str]]:
     if not originals:
         raise ValueError(f"No tiles found in {tile_dir}")
 
-    # --- Shuffle with fixed seed for reproducibility ---
+    # Shuffle with a fixed seed so the split is the same every time
     random.seed(RANDOM_SEED)
     random.shuffle(originals)
 
-    n = len(originals)
-    n_train = int(n * TRAIN_SPLIT)
-    n_val = int(n * VAL_SPLIT)
+    total_images = len(originals)
+    num_train = int(total_images * TRAIN_SPLIT)
+    num_val = int(total_images * VAL_SPLIT)
 
     splits = {
-        "train": originals[:n_train],
-        "val": originals[n_train : n_train + n_val],
-        "test": originals[n_train + n_val :],
+        "train": originals[:num_train],
+        "val": originals[num_train : num_train + num_val],
+        "test": originals[num_train + num_val :],
     }
 
-    # --- Save to JSON ---
+    # Persist the split so every module uses the same one
     splits_path = processed_dir / "splits.json"
     with open(splits_path, "w") as f:
         json.dump(splits, f, indent=2)
@@ -386,27 +386,26 @@ def create_splits(processed_dir: Path) -> dict[str, list[str]]:
     return splits
 
 
-# =============================================================================
-# PIPELINE ORCHESTRATOR
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Top-level pipeline runner
+# ---------------------------------------------------------------------------
 
 
 def run_tiling_pipeline(
     resolutions: Optional[list[int]] = None,
 ) -> dict[int, tuple[int, int]]:
-    """Run the full tiling pipeline across all images and resolutions.
+    """Tile every image at every resolution, then create the data splits.
 
-    Processes every original image in data/raw/images/ with its
-    corresponding annotation, generating tiles at each specified
-    resolution. Then creates train/val/test splits.
+    This is the main entry point: point it at data/raw/images/ and it
+    will produce all the tiles we need for training.
 
     Args:
         resolutions: List of tile sizes to generate. Defaults to
             config.RESOLUTIONS ([64, 128, 256]).
 
     Returns:
-        Dictionary mapping resolution to (total_positive, total_negative)
-        tile counts.
+        Dictionary mapping resolution to (waldo_tiles, background_tiles)
+        counts.
 
     Raises:
         FileNotFoundError: If no images or annotations are found.
@@ -429,8 +428,8 @@ def run_tiling_pipeline(
 
     for resolution in resolutions:
         output_dir = DATA_PROCESSED / str(resolution)
-        total_pos = 0
-        total_neg = 0
+        total_waldo = 0
+        total_background = 0
 
         for image_path in image_paths:
             annotation_path = annotations_dir / f"{image_path.stem}.xml"
@@ -443,41 +442,43 @@ def run_tiling_pipeline(
                 continue
 
             try:
-                pos, neg = tile_single_image(image_path, annotation_path, output_dir, resolution)
-                total_pos += pos
-                total_neg += neg
+                waldo, background = tile_single_image(
+                    image_path, annotation_path, output_dir, resolution
+                )
+                total_waldo += waldo
+                total_background += background
             except Exception:
                 logger.exception("Failed to tile %s", image_path.name)
                 raise
 
-        pos_ratio = total_pos / max(1, total_pos + total_neg) * 100
+        waldo_percent = total_waldo / max(1, total_waldo + total_background) * 100
         logger.info(
-            "Resolution %d: %d positive, %d negative (%.1f%% positive)",
+            "Resolution %d: %d with Waldo, %d background (%.1f%% Waldo)",
             resolution,
-            total_pos,
-            total_neg,
-            pos_ratio,
+            total_waldo,
+            total_background,
+            waldo_percent,
         )
-        results[resolution] = (total_pos, total_neg)
+        results[resolution] = (total_waldo, total_background)
 
-    # --- Create splits after tiling ---
+    # Now that all tiles exist, decide which images go to which split
     logger.info("Creating train/val/test splits...")
     create_splits(DATA_PROCESSED)
 
     return results
 
 
-# =============================================================================
-# HSV MASKING AND SOBEL EDGE PREPROCESSING
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Colour masking and edge detection
+# ---------------------------------------------------------------------------
 
 
 def dual_hsv_mask(tile: np.ndarray) -> np.ndarray:
-    """Create a binary mask highlighting red and white regions.
+    """Highlight red and white pixels — the colours of Waldo's shirt.
 
-    Targets Waldo's distinctive red-and-white striped pattern using
-    dual HSV ranges. Red requires two ranges because it wraps around
-    in HSV space (hue 0-10 and 170-180).
+    Red is tricky in HSV because the hue channel wraps around, so we
+    need two separate ranges (low reds near 0 and high reds near 180).
+    White is simply "high brightness, low saturation."
 
     Args:
         tile: BGR image tile as numpy array (H, W, 3).
@@ -487,12 +488,12 @@ def dual_hsv_mask(tile: np.ndarray) -> np.ndarray:
     """
     hsv = cv2.cvtColor(tile, cv2.COLOR_BGR2HSV)
 
-    # --- Red mask (two ranges because red wraps in HSV) ---
-    red_low = cv2.inRange(hsv, np.array(HSV_RED_LOW1), np.array(HSV_RED_HIGH1))
-    red_high = cv2.inRange(hsv, np.array(HSV_RED_LOW2), np.array(HSV_RED_HIGH2))
-    red_mask = cv2.bitwise_or(red_low, red_high)
+    # Red sits at both ends of the hue wheel, so we need two ranges
+    red_low_range = cv2.inRange(hsv, np.array(HSV_RED_LOW1), np.array(HSV_RED_HIGH1))
+    red_high_range = cv2.inRange(hsv, np.array(HSV_RED_LOW2), np.array(HSV_RED_HIGH2))
+    red_mask = cv2.bitwise_or(red_low_range, red_high_range)
 
-    # --- White mask (high value, low saturation) ---
+    # White = bright pixels with very little colour saturation
     white_mask = cv2.inRange(hsv, np.array(HSV_WHITE_LOW), np.array(HSV_WHITE_HIGH))
 
     combined = cv2.bitwise_or(red_mask, white_mask)
@@ -500,11 +501,11 @@ def dual_hsv_mask(tile: np.ndarray) -> np.ndarray:
 
 
 def sobel_edges(tile: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """Apply Sobel edge detection to masked regions of a tile.
+    """Find sharp edges, but only inside the red/white masked area.
 
-    Computes gradient magnitude using Sobel operators in X and Y
-    directions, but only within the HSV-masked region. This highlights
-    Waldo's stripe edges while ignoring background texture.
+    We run Sobel filters in X and Y on the masked greyscale tile,
+    then combine them into an edge-strength map.  This picks up the
+    stripe boundaries on Waldo's shirt while ignoring busy background.
 
     Args:
         tile: BGR image tile as numpy array (H, W, 3).
@@ -515,14 +516,14 @@ def sobel_edges(tile: np.ndarray, mask: np.ndarray) -> np.ndarray:
     """
     gray = cv2.cvtColor(tile, cv2.COLOR_BGR2GRAY)
 
-    # Apply mask so edges are only detected in red/white regions
+    # Zero-out everything outside the colour mask before edge detection
     masked_gray = cv2.bitwise_and(gray, gray, mask=mask)
 
-    sobel_x = cv2.Sobel(masked_gray, cv2.CV_64F, 1, 0, ksize=3)
-    sobel_y = cv2.Sobel(masked_gray, cv2.CV_64F, 0, 1, ksize=3)
-    magnitude = np.sqrt(sobel_x**2 + sobel_y**2)
+    gradient_x = cv2.Sobel(masked_gray, cv2.CV_64F, 1, 0, ksize=3)
+    gradient_y = cv2.Sobel(masked_gray, cv2.CV_64F, 0, 1, ksize=3)
+    magnitude = np.sqrt(gradient_x**2 + gradient_y**2)
 
-    # Normalize to uint8 range
+    # Scale to 0-255 so it fits in a single image channel
     max_val = magnitude.max()
     if max_val > 0:
         result: np.ndarray = (magnitude / max_val * 255).astype(np.uint8)
@@ -533,11 +534,10 @@ def sobel_edges(tile: np.ndarray, mask: np.ndarray) -> np.ndarray:
 
 
 def edge_density(sobel_output: np.ndarray) -> float:
-    """Compute fraction of pixels with significant edge energy.
+    """How "edgy" is this tile?  (fraction of strong-edge pixels).
 
-    Used as a quick filter to discard tiles that are pure background
-    (no interesting edges). Tiles below DENSITY_THRESHOLD are skipped
-    during training to reduce false positives and computation.
+    Boring background tiles have almost no edges.  We use this score
+    to throw them out early so the model doesn't waste time on them.
 
     Args:
         sobel_output: Edge magnitude image from sobel_edges (H, W).
@@ -545,25 +545,24 @@ def edge_density(sobel_output: np.ndarray) -> float:
     Returns:
         Fraction of pixels above the activity threshold [0.0, 1.0].
     """
-    active_pixels = int(np.sum(sobel_output > SOBEL_ACTIVE_THRESHOLD))
+    strong_pixels = int(np.sum(sobel_output > SOBEL_ACTIVE_THRESHOLD))
     total_pixels = sobel_output.shape[0] * sobel_output.shape[1]
 
     if total_pixels == 0:
         return 0.0
 
-    return float(active_pixels / total_pixels)
+    return float(strong_pixels / total_pixels)
 
 
 def preprocess_tile(
     tile: np.ndarray,
     use_sobel: bool = True,
 ) -> Optional[np.ndarray]:
-    """Run the full preprocessing pipeline on a single tile.
+    """Run colour masking + edge detection on one tile, skip if boring.
 
-    Applies dual HSV masking and Sobel edge detection, then checks
-    edge density. If density is below threshold, returns None to
-    indicate this tile should be skipped. Otherwise returns the
-    processed image array.
+    If the tile has almost no edges in the red/white regions it's
+    probably just empty background, so we return None to signal
+    "don't bother with this one."
 
     Args:
         tile: BGR image tile as numpy array (H, W, 3).
@@ -582,21 +581,22 @@ def preprocess_tile(
     if density < DENSITY_THRESHOLD:
         return None
 
-    # --- Convert BGR to RGB and normalize to [0, 1] ---
+    # Flip BGR to RGB and scale pixel values to 0-1
     rgb = cv2.cvtColor(tile, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-    rgb = np.transpose(rgb, (2, 0, 1))  # (H,W,3) -> (3,H,W)
+    rgb = np.transpose(rgb, (2, 0, 1))  # channels-first for PyTorch
 
     if use_sobel:
-        sobel_norm = sobel.astype(np.float32) / 255.0
-        sobel_channel = np.expand_dims(sobel_norm, axis=0)  # (1,H,W)
+        # Tack the edge map on as a 4th channel alongside RGB
+        sobel_normalised = sobel.astype(np.float32) / 255.0
+        sobel_channel = np.expand_dims(sobel_normalised, axis=0)
         return np.concatenate([rgb, sobel_channel], axis=0)  # (4,H,W)
 
-    return rgb  # (3,H,W)
+    return rgb
 
 
-# =============================================================================
-# MAIN
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Run as a standalone script
+# ---------------------------------------------------------------------------
 
 
 if __name__ == "__main__":

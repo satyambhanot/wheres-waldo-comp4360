@@ -1,9 +1,9 @@
-"""PyTorch Dataset and DataLoader for Waldo detection tiles.
+"""Feeds tiles to PyTorch for training and evaluation.
 
-Loads pre-tiled images at a specified resolution from the processed
-data directory, applies optional preprocessing (color mode conversion,
-Sobel edge stacking, density filtering), and returns (image_tensor,
-target_dict) pairs suitable for SSD-style detection training.
+Once the tiling pipeline has chopped the puzzle images into small
+squares, this module loads them back up, applies any requested
+pre-processing (colour mode, Sobel edges, density filtering), and
+hands them to PyTorch's DataLoader one batch at a time.
 """
 
 import json
@@ -31,12 +31,11 @@ logger = logging.getLogger(__name__)
 
 
 class WaldoDataset(Dataset):
-    """PyTorch Dataset for loading Waldo detection tiles.
+    """Loads Waldo tiles from disk and serves them to the model.
 
-    Loads pre-tiled images at a specified resolution, applies optional
-    preprocessing (Sobel edge detection, color mode conversion, density
-    filtering), and returns (image_tensor, target_dict) pairs for SSD
-    training.
+    Each tile comes back as an image tensor plus a dictionary of
+    bounding-box targets.  Optional knobs let you toggle colour
+    modes, Sobel edge features, and data augmentation.
 
     Attributes:
         resolution: Tile size in pixels (64, 128, or 256).
@@ -55,14 +54,14 @@ class WaldoDataset(Dataset):
         use_density_filter: bool = True,
         augment: bool = False,
     ) -> None:
-        """Initialize the WaldoDataset.
+        """Set up the dataset for a specific split and configuration.
 
         Args:
             split: One of 'train', 'val', or 'test'.
             resolution: Tile size in pixels (64, 128, or 256).
             color_mode: One of 'color', 'grayscale', 'bw'.
             use_sobel: Whether to add Sobel magnitude as 4th channel.
-            use_density_filter: Whether to skip low-density background tiles.
+            use_density_filter: Whether to throw away boring background tiles.
             augment: Whether to apply random augmentation (training only).
 
         Raises:
@@ -81,7 +80,7 @@ class WaldoDataset(Dataset):
         self.use_sobel = use_sobel
         self.augment = augment
 
-        # --- Load split assignments ---
+        # Figure out which original images belong to this split
         splits_path = DATA_PROCESSED / "splits.json"
         if not splits_path.exists():
             raise FileNotFoundError(
@@ -93,7 +92,7 @@ class WaldoDataset(Dataset):
 
         allowed_originals = set(splits[split])
 
-        # --- Collect tile paths belonging to this split ---
+        # Gather every tile that came from one of this split's images
         tile_dir = DATA_PROCESSED / str(resolution)
         if not tile_dir.exists():
             raise FileNotFoundError(f"Tile directory not found: {tile_dir}")
@@ -103,33 +102,33 @@ class WaldoDataset(Dataset):
             tp for tp in all_tiles if tp.stem.rsplit("_tile_", 1)[0] in allowed_originals
         ]
 
-        # --- Optionally filter by edge density ---
+        # Optionally drop tiles that are mostly empty background
         if use_density_filter:
             self.tiles = self._apply_density_filter(split_tiles)
         else:
             self.tiles = split_tiles
 
-        # --- Count positives for logging ---
-        pos_count = sum(1 for tp in self.tiles if self._has_labels(tp))
-        neg_count = len(self.tiles) - pos_count
+        # Quick tally for the log message
+        waldo_count = sum(1 for tp in self.tiles if self._has_labels(tp))
+        background_count = len(self.tiles) - waldo_count
 
         logger.info(
-            "%s set (%dpx, %s, sobel=%s): %d tiles (%d pos, %d neg)",
+            "%s set (%dpx, %s, sobel=%s): %d tiles (%d waldo, %d background)",
             split,
             resolution,
             color_mode,
             use_sobel,
             len(self.tiles),
-            pos_count,
-            neg_count,
+            waldo_count,
+            background_count,
         )
 
     def _apply_density_filter(self, tile_paths: list[Path]) -> list[Path]:
-        """Filter out low-density background tiles.
+        """Throw away tiles that are mostly blank background.
 
-        Reads each tile, computes HSV mask + Sobel edge density, and
-        keeps only tiles above DENSITY_THRESHOLD. Positive tiles (with
-        Waldo) are always kept regardless of density.
+        We always keep tiles that contain Waldo, no matter how low
+        their edge density is.  For background tiles, we only keep the
+        ones that have enough going on to be worth training on.
 
         Args:
             tile_paths: List of tile image paths to filter.
@@ -166,7 +165,7 @@ class WaldoDataset(Dataset):
         return filtered
 
     def _has_labels(self, tile_path: Path) -> bool:
-        """Check if a tile has any Waldo annotations.
+        """Does this tile actually contain Waldo?
 
         Args:
             tile_path: Path to the tile .jpg file.
@@ -184,7 +183,7 @@ class WaldoDataset(Dataset):
         return len(self.tiles)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """Load a single tile with its target annotations.
+        """Grab one tile and its labels, ready for the model.
 
         Args:
             idx: Index into the tile list.
@@ -200,12 +199,11 @@ class WaldoDataset(Dataset):
             raise ValueError(f"Failed to read tile: {tile_path}")
         img = cv2.cvtColor(raw_img, cv2.COLOR_BGR2RGB)
 
-        # --- Load bounding boxes ---
+        # Read Waldo bounding boxes (if any) from the label file
         boxes = self._load_boxes(tile_path)
 
-        # --- Compute Sobel on original color data BEFORE color mode conversion ---
-        # HSV masking needs real RGB/BGR color channels; grayscale/BW
-        # modes destroy that information, so Sobel must come first.
+        # Compute Sobel BEFORE switching colour modes, because the
+        # HSV mask needs real colour information to work properly.
         sobel_channel: Optional[np.ndarray] = None
         if self.use_sobel:
             bgr_for_sobel = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
@@ -213,23 +211,23 @@ class WaldoDataset(Dataset):
             sobel_out = sobel_edges(bgr_for_sobel, mask)
             sobel_channel = sobel_out.astype(np.float32) / 255.0
 
-        # --- Data augmentation (training only) ---
+        # Random flips / jitter for training variety
         if self.augment:
             img, boxes, sobel_channel = self._augment(img, boxes, sobel_channel)
 
-        # --- Color mode conversion ---
+        # Switch to greyscale / B&W if requested
         img = self._apply_color_mode(img)
 
-        # --- Convert to tensor ---
+        # Normalise pixels to 0-1 and rearrange to channels-first
         img_float = img.astype(np.float32) / 255.0
-        img_tensor = torch.from_numpy(np.transpose(img_float, (2, 0, 1)))  # (H,W,3) -> (3,H,W)
+        img_tensor = torch.from_numpy(np.transpose(img_float, (2, 0, 1)))
 
-        # --- Stack Sobel as 4th channel ---
+        # Append the edge map as a 4th channel when Sobel is enabled
         if self.use_sobel and sobel_channel is not None:
-            sobel_tensor = torch.from_numpy(sobel_channel).unsqueeze(0)  # (1,H,W)
-            img_tensor = torch.cat([img_tensor, sobel_tensor], dim=0)  # (4,H,W)
+            sobel_tensor = torch.from_numpy(sobel_channel).unsqueeze(0)
+            img_tensor = torch.cat([img_tensor, sobel_tensor], dim=0)
 
-        # --- Build target dict ---
+        # Package the labels the way PyTorch detection models expect
         if boxes:
             boxes_tensor = torch.tensor(boxes, dtype=torch.float32)
             labels_tensor = torch.ones(len(boxes), dtype=torch.long)
@@ -245,14 +243,14 @@ class WaldoDataset(Dataset):
         return img_tensor, target
 
     def _load_boxes(self, tile_path: Path) -> list[list[float]]:
-        """Load YOLO annotations and convert to pixel coordinates.
+        """Read the YOLO label file and convert to pixel-coordinate boxes.
 
-        YOLO format: class_id center_x center_y width height (normalized).
-        Converts to [xmin, ymin, xmax, ymax] in pixel coordinates.
+        The label file stores normalised centre+size; we convert back
+        to the corner format [xmin, ymin, xmax, ymax] in pixels.
 
         Args:
-            tile_path: Path to the tile .jpg file. Label file has same
-                name with .txt extension.
+            tile_path: Path to the tile .jpg file. The label file sits
+                right next to it with a .txt extension.
 
         Returns:
             List of boxes as [xmin, ymin, xmax, ymax] in pixel coords.
@@ -269,22 +267,24 @@ class WaldoDataset(Dataset):
                 if len(parts) < 5:
                     continue
 
-                cx, cy, bw, bh = float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])
-                r = self.resolution
-                xmin = (cx - bw / 2.0) * r
-                ymin = (cy - bh / 2.0) * r
-                xmax = (cx + bw / 2.0) * r
-                ymax = (cy + bh / 2.0) * r
+                centre_x = float(parts[1])
+                centre_y = float(parts[2])
+                box_w = float(parts[3])
+                box_h = float(parts[4])
+                size = self.resolution
+                xmin = (centre_x - box_w / 2.0) * size
+                ymin = (centre_y - box_h / 2.0) * size
+                xmax = (centre_x + box_w / 2.0) * size
+                ymax = (centre_y + box_h / 2.0) * size
                 boxes.append([xmin, ymin, xmax, ymax])
 
         return boxes
 
     def _apply_color_mode(self, img: np.ndarray) -> np.ndarray:
-        """Convert image to the configured color mode.
+        """Switch to greyscale or black-and-white if requested.
 
-        For grayscale and B&W, the single-channel result is replicated
-        to 3 channels so the pretrained backbone (expecting 3ch input)
-        can still process it.
+        The backbone always expects three channels, so single-channel
+        results get copied across all three slots.
 
         Args:
             img: RGB image array (H, W, 3).
@@ -313,11 +313,10 @@ class WaldoDataset(Dataset):
         boxes: list[list[float]],
         sobel_channel: Optional[np.ndarray] = None,
     ) -> tuple[np.ndarray, list[list[float]], Optional[np.ndarray]]:
-        """Apply random augmentations to image, boxes, and Sobel channel.
+        """Add a bit of randomness so the model doesn't memorise tiles.
 
-        Currently supports horizontal flip and color jitter. Box
-        coordinates and the Sobel channel are transformed to match
-        the augmented image.
+        Right now we randomly flip horizontally and jitter the colour.
+        Both the boxes and the Sobel map are adjusted to match.
 
         Args:
             img: RGB image array (H, W, 3).
@@ -329,17 +328,16 @@ class WaldoDataset(Dataset):
         """
         h, w = img.shape[:2]
 
-        # --- Horizontal flip (50% chance) ---
+        # Coin flip: mirror the tile left-to-right
         if np.random.random() > 0.5:
             img = np.fliplr(img).copy()
             boxes = [[w - b[2], b[1], w - b[0], b[3]] for b in boxes]
             if sobel_channel is not None:
                 sobel_channel = np.fliplr(sobel_channel).copy()
 
-        # --- Color jitter (50% chance, only for color mode) ---
+        # Coin flip: slightly tweak saturation and brightness
         if self.color_mode == "color" and np.random.random() > 0.5:
             hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV).astype(np.float32)
-            # Slight saturation and brightness variation
             hsv[:, :, 1] *= np.random.uniform(0.8, 1.2)
             hsv[:, :, 2] *= np.random.uniform(0.8, 1.2)
             hsv = np.clip(hsv, 0, 255).astype(np.uint8)
@@ -348,19 +346,19 @@ class WaldoDataset(Dataset):
         return img, boxes, sobel_channel
 
 
-# =============================================================================
-# DATALOADER UTILITIES
-# =============================================================================
+# ---------------------------------------------------------------------------
+# DataLoader helpers
+# ---------------------------------------------------------------------------
 
 
 def collate_fn(
     batch: list[tuple[torch.Tensor, dict[str, torch.Tensor]]],
 ) -> tuple[torch.Tensor, list[dict[str, torch.Tensor]]]:
-    """Custom collate function for variable-size detection targets.
+    """Stack images into a batch while keeping targets as a list.
 
-    Standard PyTorch collate fails because each image can have a
-    different number of bounding boxes. This function stacks images
-    into a batch tensor but keeps targets as a list of dicts.
+    PyTorch's default collate chokes because different tiles have
+    different numbers of bounding boxes.  We just stack the images
+    and leave the target dicts in a plain list.
 
     Args:
         batch: List of (image_tensor, target_dict) tuples from Dataset.
@@ -384,11 +382,9 @@ def get_dataloader(
     batch_size: int = BATCH_SIZE,
     num_workers: int = 0,
 ) -> DataLoader:
-    """Create a DataLoader for the specified split and configuration.
+    """One-liner to build a ready-to-go DataLoader for any split.
 
-    Convenience function that creates a WaldoDataset and wraps it in
-    a DataLoader with the custom collate function. Training split gets
-    shuffling and augmentation; val/test do not.
+    Training gets shuffled and augmented; validation and test do not.
 
     Args:
         split: One of 'train', 'val', or 'test'.
@@ -434,9 +430,9 @@ def get_dataloader(
     return loader
 
 
-# =============================================================================
-# MAIN — SANITY CHECK
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Quick smoke test when run directly
+# ---------------------------------------------------------------------------
 
 
 if __name__ == "__main__":

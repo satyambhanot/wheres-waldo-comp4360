@@ -1,10 +1,9 @@
-"""SSD (Single Shot MultiBox Detector) with MobileNet V3 Large backbone.
+"""The neural network that actually finds Waldo.
 
-Adapted from a strawberry detection architecture to the Where's Waldo
-domain. The backbone is split into 4 stages producing multi-scale
-feature maps, followed by 2 extra convolutional blocks for a total of
-6 detection levels. Supports both 3-channel (RGB) and 4-channel
-(RGB + Sobel edge) input for the preprocessing ablation study.
+We use MobileNet V3 Large as a lightweight backbone and bolt SSD
+detection heads onto six feature-map levels so the model can spot
+Waldo at different scales.  Supports 3-channel RGB or 4-channel
+RGB + Sobel edge input.
 
 Usage:
     python -m src.model        # run sanity checks
@@ -22,41 +21,40 @@ from src.config import NUM_CLASSES, NUM_SSD_HEADS, PRETRAINED, RESOLUTIONS
 logger = logging.getLogger(__name__)
 
 
-# === Constants ===
+# --- Architecture constants ---
 
-# Channel counts at the output of each MobileNetV3 backbone stage
+# How many channels come out of each backbone stage
 _BACKBONE_CHANNELS: list[int] = [24, 40, 112, 960]
 
-# Slice boundaries to split MobileNetV3 .features into 4 stages
+# Which layers of MobileNetV3.features form each stage
 _STAGE_SLICES: list[tuple[int, int]] = [(0, 4), (4, 7), (7, 13), (13, 17)]
 
-# Extra block output channel counts (after backbone)
-_EXTRA1_OUT: int = 512
-_EXTRA2_OUT: int = 256
+# Channel counts for the two extra blocks we add after the backbone
+_EXTRA_BLOCK_1_CHANNELS: int = 512
+_EXTRA_BLOCK_2_CHANNELS: int = 256
 
-# All 6 feature map channel counts in detection order
-_ALL_CHANNELS_6: list[int] = _BACKBONE_CHANNELS + [_EXTRA1_OUT, _EXTRA2_OUT]
+# All six feature-map channel counts, in detection order
+_ALL_CHANNELS_6: list[int] = _BACKBONE_CHANNELS + [_EXTRA_BLOCK_1_CHANNELS, _EXTRA_BLOCK_2_CHANNELS]
 
-# Anchors per spatial location — one per aspect ratio
+# We try three anchor shapes at every spatial location
 _ASPECT_RATIOS: list[float] = [1.0, 0.5, 2.0]
-_NUM_ANCHORS_PER_LOCATION: int = len(_ASPECT_RATIOS)
+_ANCHORS_PER_CELL: int = len(_ASPECT_RATIOS)
 
 
-# =============================================================================
-# ANCHOR GENERATION
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Anchor box generation
+# ---------------------------------------------------------------------------
 
 
 def generate_anchors(
     feature_map_sizes: list[tuple[int, int]],
     image_size: int,
 ) -> torch.Tensor:
-    """Generate SSD anchor boxes for all feature map levels.
+    """Place default anchor boxes at every position on every feature map.
 
-    Creates a set of default anchor boxes at each spatial location of
-    every feature map. Anchors are scaled proportionally so that earlier
-    (finer) feature maps detect smaller objects and later (coarser)
-    maps detect larger ones.
+    Earlier (larger) feature maps get small anchors for catching tiny
+    objects; later (smaller) maps get bigger anchors.  Three aspect
+    ratios at each location give the detector some shape flexibility.
 
     Args:
         feature_map_sizes: List of (height, width) tuples, one per
@@ -71,18 +69,17 @@ def generate_anchors(
     num_levels = len(feature_map_sizes)
 
     for level, (fmap_h, fmap_w) in enumerate(feature_map_sizes):
-        # Linearly spaced scales so deeper levels cover larger objects
+        # Deeper levels get larger anchors (linear spacing)
         scale = (level + 1) / (num_levels + 1)
 
         for row in range(fmap_h):
             for col in range(fmap_w):
-                # Center of this anchor cell, normalized to [0, 1]
+                # Centre of this grid cell, normalised to [0, 1]
                 cx = (col + 0.5) / fmap_w
                 cy = (row + 0.5) / fmap_h
 
                 for ratio in _ASPECT_RATIOS:
-                    # Clamp to [0, 1] because large scales with
-                    # non-square ratios can exceed image bounds
+                    # Cap at 1.0 so anchors don't poke out of the image
                     w = min(scale * math.sqrt(ratio), 1.0)
                     h = min(scale / math.sqrt(ratio), 1.0)
                     anchors.append(torch.tensor([cx, cy, w, h]))
@@ -90,24 +87,23 @@ def generate_anchors(
     return torch.stack(anchors, dim=0)
 
 
-# =============================================================================
-# DECODE PREDICTIONS
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Turning predictions back into real boxes
+# ---------------------------------------------------------------------------
 
 
 def decode_predictions(
     loc_preds: torch.Tensor,
     anchors: torch.Tensor,
 ) -> torch.Tensor:
-    """Convert SSD offset predictions to absolute bounding boxes.
+    """Apply the model's offset predictions to the anchors to get real boxes.
 
-    Applies the predicted (dx, dy, dw, dh) offsets to the anchor boxes
-    to obtain absolute coordinates suitable for NMS and evaluation.
+    The model outputs small adjustments (dx, dy, dw, dh) relative to
+    each anchor.  This function applies those tweaks and converts the
+    result to corner-format [xmin, ymin, xmax, ymax].
 
     Args:
         loc_preds: Predicted offsets of shape (batch, num_anchors, 4).
-            Format: [dx, dy, dw, dh] where dx/dy are center offsets
-            scaled by anchor size, and dw/dh are log-scale adjustments.
         anchors: Anchor boxes of shape (num_anchors, 4) in
             [cx, cy, w, h] normalized format.
 
@@ -115,7 +111,7 @@ def decode_predictions(
         Decoded boxes of shape (batch, num_anchors, 4) in
         [xmin, ymin, xmax, ymax] format, normalized to [0, 1].
     """
-    # anchors: (A, 4) -> (1, A, 4) for broadcasting with batch dim
+    # Unsqueeze anchors so they broadcast across the batch dimension
     a_cx = anchors[:, 0].unsqueeze(0)
     a_cy = anchors[:, 1].unsqueeze(0)
     a_w = anchors[:, 2].unsqueeze(0)
@@ -126,7 +122,7 @@ def decode_predictions(
     pred_w = a_w * torch.exp(loc_preds[:, :, 2])
     pred_h = a_h * torch.exp(loc_preds[:, :, 3])
 
-    # Convert (cx, cy, w, h) -> (xmin, ymin, xmax, ymax)
+    # Switch from centre+size to corner format
     xmin = pred_cx - pred_w / 2
     ymin = pred_cy - pred_h / 2
     xmax = pred_cx + pred_w / 2
@@ -135,9 +131,9 @@ def decode_predictions(
     return torch.stack([xmin, ymin, xmax, ymax], dim=-1)
 
 
-# =============================================================================
-# EXTRA CONVOLUTIONAL BLOCKS
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Extra convolutional blocks (appended after the backbone)
+# ---------------------------------------------------------------------------
 
 
 def _make_extra_block(
@@ -145,11 +141,10 @@ def _make_extra_block(
     mid_channels: int,
     out_channels: int,
 ) -> nn.Sequential:
-    """Build one extra SSD feature extraction block.
+    """Build one extra conv block that halves the spatial resolution.
 
-    Each block consists of a 1x1 bottleneck conv followed by a 3x3
-    strided conv that halves the spatial resolution. Both layers use
-    BatchNorm and ReLU.
+    A 1x1 bottleneck squeezes channels, then a 3x3 strided conv
+    expands them again while cutting the feature map in half.
 
     Args:
         in_channels: Number of input channels.
@@ -176,19 +171,19 @@ def _make_extra_block(
     )
 
 
-# =============================================================================
-# SSD DETECTION HEADS
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Detection heads (one conv each for classification and box regression)
+# ---------------------------------------------------------------------------
 
 
 def _make_head(
     in_channels: int,
     num_outputs_per_anchor: int,
 ) -> nn.Conv2d:
-    """Create a single SSD prediction head (classification or regression).
+    """Create a single prediction head (either "is it Waldo?" or "where?").
 
-    Uses Xavier initialization for stable early training — default
-    PyTorch init can cause large initial losses with SSD.
+    Xavier init keeps the initial loss reasonable; PyTorch's default
+    would produce wild predictions on the first forward pass.
 
     Args:
         in_channels: Number of input feature channels.
@@ -198,7 +193,7 @@ def _make_head(
     Returns:
         Conv2d layer mapping features to per-anchor predictions.
     """
-    num_outputs = _NUM_ANCHORS_PER_LOCATION * num_outputs_per_anchor
+    num_outputs = _ANCHORS_PER_CELL * num_outputs_per_anchor
     conv = nn.Conv2d(in_channels, num_outputs, kernel_size=3, padding=1)
     nn.init.xavier_uniform_(conv.weight)
     if conv.bias is not None:
@@ -206,22 +201,21 @@ def _make_head(
     return conv
 
 
-# =============================================================================
-# WALDO SSD MODEL
-# =============================================================================
+# ---------------------------------------------------------------------------
+# The main model
+# ---------------------------------------------------------------------------
 
 
 class WaldoSSD(nn.Module):
-    """SSD object detector with MobileNet V3 Large backbone for Waldo detection.
+    """Our Waldo detector: MobileNet V3 backbone + SSD detection heads.
 
-    The architecture extracts multi-scale features from 4 backbone stages
-    plus 2 extra convolutional blocks, giving 6 detection levels total.
-    Each level applies a classification head (is this Waldo?) and a
-    regression head (where exactly is Waldo?) with 3 anchors per
-    spatial location.
+    Six feature-map levels look for Waldo at different scales — from
+    fine details on the early maps to coarse shapes on the later ones.
+    Each level asks two questions at every anchor: "is this Waldo?"
+    (classification) and "where exactly is he?" (box regression).
 
-    A 4-head ablation mode drops the two finest-resolution levels
-    (stages 1–2) to study the effect of small-scale features.
+    A 4-head ablation mode drops the two finest levels to see whether
+    those small-scale features actually help.
 
     Attributes:
         num_classes: Number of object classes (including background).
@@ -236,15 +230,14 @@ class WaldoSSD(nn.Module):
         in_channels: int = 3,
         pretrained: bool = PRETRAINED,
     ) -> None:
-        """Initialize WaldoSSD.
+        """Wire up the backbone, extra blocks, and detection heads.
 
         Args:
             num_classes: Number of object classes (background + Waldo = 2).
-            num_heads: Number of SSD detection levels. Use 6 for the full
-                model or 4 for the ablation study (drops finest 2 levels).
-            in_channels: Number of input channels. Use 3 for RGB or 4 for
-                RGB + Sobel edge channel.
-            pretrained: Whether to load ImageNet-pretrained backbone weights.
+            num_heads: Detection levels — 6 for full model, 4 to skip the
+                two finest scales.
+            in_channels: 3 for plain RGB, 4 when Sobel edges are included.
+            pretrained: Load ImageNet weights into the backbone?
 
         Raises:
             ValueError: If num_heads is not 4 or 6.
@@ -258,15 +251,15 @@ class WaldoSSD(nn.Module):
         self.num_heads = num_heads
         self.in_channels = in_channels
 
-        # --- Backbone ---
+        # Load the MobileNetV3 backbone (optionally with ImageNet weights)
         weights = "DEFAULT" if pretrained else None
         backbone = models.mobilenet_v3_large(weights=weights)
 
-        # Modify first conv if using 4-channel input
+        # If we're feeding in 4 channels (RGB + Sobel), widen the first conv
         if in_channels != 3:
             self._adapt_first_conv(backbone, in_channels)
 
-        # Split backbone .features into 4 stages for multi-scale extraction
+        # Carve the backbone into four stages for multi-scale features
         self.stage1 = nn.Sequential(
             *list(backbone.features[_STAGE_SLICES[0][0] : _STAGE_SLICES[0][1]])
         )
@@ -280,12 +273,12 @@ class WaldoSSD(nn.Module):
             *list(backbone.features[_STAGE_SLICES[3][0] : _STAGE_SLICES[3][1]])
         )
 
-        # --- Extra layers for additional detection scales ---
-        self.extra1 = _make_extra_block(_BACKBONE_CHANNELS[3], 256, _EXTRA1_OUT)
-        self.extra2 = _make_extra_block(_EXTRA1_OUT, 128, _EXTRA2_OUT)
+        # Two extra blocks give us coarser feature maps for large-scale detection
+        self.extra1 = _make_extra_block(_BACKBONE_CHANNELS[3], 256, _EXTRA_BLOCK_1_CHANNELS)
+        self.extra2 = _make_extra_block(_EXTRA_BLOCK_1_CHANNELS, 128, _EXTRA_BLOCK_2_CHANNELS)
 
-        # --- Detection heads ---
-        # In 4-head mode, skip the 2 finest levels (stage1, stage2)
+        # Build one classification + one regression head per active level
+        # (in 4-head mode we simply skip the two finest-resolution stages)
         if num_heads == 6:
             active_channels = _ALL_CHANNELS_6
         else:
@@ -307,18 +300,17 @@ class WaldoSSD(nn.Module):
         backbone: nn.Module,
         in_channels: int,
     ) -> None:
-        """Modify the backbone's first conv layer for non-3-channel input.
+        """Widen the first conv to accept extra input channels.
 
-        Copies pretrained RGB weights into the first 3 channels and
-        initializes extra channels as the mean of the RGB weights.
-        This lets the Sobel channel start with a reasonable filter
-        rather than random noise.
+        We keep the pretrained RGB weights intact and initialise the
+        new channel(s) as the average of the RGB filters — a much
+        better starting point than random noise.
 
         Args:
             backbone: The MobileNetV3 model whose first conv to modify.
             in_channels: Desired number of input channels.
         """
-        # MobileNetV3 .features[0] is a ConvBNActivation block; [0][0] is the Conv2d
+        # The very first layer is a ConvBNActivation block; dig into it
         first_block = backbone.features[0]  # type: ignore[index]
         old_conv = first_block[0]
         assert isinstance(old_conv, nn.Conv2d)
@@ -333,9 +325,9 @@ class WaldoSSD(nn.Module):
         )
 
         with torch.no_grad():
-            # Copy pretrained RGB weights
+            # Carry over the learned RGB filters
             new_conv.weight[:, :3] = old_conv.weight
-            # Extra channels get the mean of RGB — better than random
+            # Initialise extra channels with the RGB average
             rgb_mean = old_conv.weight.mean(dim=1, keepdim=True)
             new_conv.weight[:, 3:] = rgb_mean
 
@@ -348,58 +340,53 @@ class WaldoSSD(nn.Module):
         self,
         x: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Run a forward pass through the SSD.
+        """Push a batch of images through the network.
 
-        Extracts multi-scale features from the backbone and extra layers,
-        then applies classification and regression heads at each level.
-        Predictions from all levels are concatenated into flat tensors.
+        Each detection level produces per-anchor class scores and box
+        offsets; we concatenate everything into two big tensors.
 
         Args:
             x: Input image batch of shape (B, C, H, W) where C is
                 3 (RGB) or 4 (RGB + Sobel).
 
         Returns:
-            Tuple of (cls_preds, loc_preds) where:
-                - cls_preds: (B, total_anchors, num_classes) classification
-                  logits (NOT softmaxed).
-                - loc_preds: (B, total_anchors, 4) bounding box offsets
-                  as [dx, dy, dw, dh].
+            Tuple of (class_logits, box_offsets) where:
+                - class_logits: (B, total_anchors, num_classes).
+                - box_offsets: (B, total_anchors, 4) as [dx, dy, dw, dh].
         """
-        # --- Backbone feature extraction ---
+        # Run the image through four backbone stages
         s1 = self.stage1(x)
         s2 = self.stage2(s1)
         s3 = self.stage3(s2)
         s4 = self.stage4(s3)
 
-        # --- Extra layers ---
+        # Push through the two extra blocks for coarser features
         e1 = self.extra1(s4)
         e2 = self.extra2(e1)
 
-        # --- Collect feature maps for active heads ---
+        # Pick the feature maps we're actually using
         if self.num_heads == 6:
             feature_maps = [s1, s2, s3, s4, e1, e2]
         else:
             feature_maps = [s3, s4, e1, e2]
 
-        # --- Apply detection heads ---
+        # Run every active head and reshape to (B, anchors, ...)
         cls_preds: list[torch.Tensor] = []
         loc_preds: list[torch.Tensor] = []
         batch_size = x.size(0)
 
         for fmap, cls_head, reg_head in zip(feature_maps, self.cls_heads, self.reg_heads):
-            # cls: (B, anchors_per_loc * num_classes, H, W)
             cls = cls_head(fmap)
             cls = cls.permute(0, 2, 3, 1).contiguous()
             cls = cls.view(batch_size, -1, self.num_classes)
             cls_preds.append(cls)
 
-            # loc: (B, anchors_per_loc * 4, H, W)
             loc = reg_head(fmap)
             loc = loc.permute(0, 2, 3, 1).contiguous()
             loc = loc.view(batch_size, -1, 4)
             loc_preds.append(loc)
 
-        # Concatenate predictions from all levels
+        # Flatten across all levels into one big prediction tensor
         cls_out = torch.cat(cls_preds, dim=1)
         loc_out = torch.cat(loc_preds, dim=1)
 
@@ -409,11 +396,10 @@ class WaldoSSD(nn.Module):
         self,
         image_size: int,
     ) -> list[tuple[int, int]]:
-        """Compute feature map spatial dimensions for a given input size.
+        """Figure out how big each feature map is for a given input size.
 
-        Runs a dummy forward pass to determine the exact output sizes
-        at each detection level. This accounts for any rounding in
-        stride/padding arithmetic.
+        We just run a dummy image through and measure, which is the
+        only reliable way to account for rounding in stride/padding.
 
         Args:
             image_size: Input image size in pixels (assumes square).
@@ -423,7 +409,6 @@ class WaldoSSD(nn.Module):
         """
         was_training = self.training
         self.eval()
-        # Create dummy on same device as model to avoid CPU/GPU mismatch
         device = next(self.parameters()).device
         dummy = torch.zeros(1, self.in_channels, image_size, image_size, device=device)
         sizes: list[tuple[int, int]] = []
@@ -444,7 +429,7 @@ class WaldoSSD(nn.Module):
             for fmap in feature_maps:
                 sizes.append((fmap.size(2), fmap.size(3)))
 
-        # Restore original mode so callers aren't surprised
+        # Put the model back in whatever mode it was in before
         if was_training:
             self.train()
 
@@ -454,10 +439,7 @@ class WaldoSSD(nn.Module):
         self,
         image_size: int,
     ) -> torch.Tensor:
-        """Generate anchors matching the model's output dimensions.
-
-        Convenience method that chains get_feature_map_sizes and
-        generate_anchors so callers don't need to handle the plumbing.
+        """Shortcut: generate the right anchors for this model and input size.
 
         Args:
             image_size: Input image size in pixels (assumes square).
@@ -470,9 +452,9 @@ class WaldoSSD(nn.Module):
         return generate_anchors(fmap_sizes, image_size)
 
 
-# =============================================================================
-# MAIN — SANITY CHECKS
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Quick sanity checks when run directly
+# ---------------------------------------------------------------------------
 
 
 if __name__ == "__main__":

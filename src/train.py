@@ -1,9 +1,8 @@
-"""Training pipeline for WaldoSSD with SSD loss, hard negative mining, and AP evaluation.
+"""Trains the Waldo detector from scratch (or fine-tunes it).
 
-Implements the complete training loop including anchor matching, multi-box
-loss with hard negative mining, cosine LR scheduling, gradient clipping,
-periodic validation with PASCAL VOC 11-point AP, and checkpoint saving.
-Designed for ablation experiments via config_overrides.
+Handles the full loop: match anchors to ground truth, compute the SSD
+loss with hard negative mining, update weights, and periodically check
+validation AP.  Pass config_overrides to swap in ablation settings.
 
 Usage:
     python -m src.train        # 3-epoch sanity check
@@ -40,25 +39,25 @@ from src.model import WaldoSSD, decode_predictions
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# BOX FORMAT CONVERSION UTILITIES
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Box-format conversion helpers
+# ---------------------------------------------------------------------------
 
-# IoU matching threshold for anchor-to-GT assignment
+# An anchor needs at least this much overlap with a GT box to be "positive"
 _IOU_MATCH_THRESHOLD: float = 0.5
 
-# Gradient clipping norm to stabilize early training
+# Cap gradient norms to keep early training stable
 _GRAD_CLIP_MAX_NORM: float = 5.0
 
-# Validation frequency in epochs
+# How often to check validation performance (every N epochs)
 _VAL_EVERY_N_EPOCHS: int = 5
 
-# Checkpoint save frequency in epochs
+# How often to save a periodic checkpoint (every N epochs)
 _CHECKPOINT_EVERY_N_EPOCHS: int = 20
 
 
 def cxcywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
-    """Convert bounding boxes from center format to corner format.
+    """Centre+size  ->  corner format.
 
     Args:
         boxes: Tensor of shape (..., 4) in [cx, cy, w, h] format.
@@ -75,7 +74,7 @@ def cxcywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
 
 
 def xyxy_to_cxcywh(boxes: torch.Tensor) -> torch.Tensor:
-    """Convert bounding boxes from corner format to center format.
+    """Corner format  ->  centre+size.
 
     Args:
         boxes: Tensor of shape (..., 4) in [xmin, ymin, xmax, ymax] format.
@@ -96,9 +95,9 @@ def xyxy_to_cxcywh(boxes: torch.Tensor) -> torch.Tensor:
     return torch.stack([cx, cy, w, h], dim=-1)
 
 
-# =============================================================================
-# ANCHOR MATCHING
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Anchor-to-ground-truth matching
+# ---------------------------------------------------------------------------
 
 
 def match_anchors_to_targets(
@@ -106,26 +105,22 @@ def match_anchors_to_targets(
     targets: list[dict[str, torch.Tensor]],
     resolution: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Match ground truth boxes to anchor boxes for SSD training.
+    """Decide which anchors are "positive" (responsible for detecting Waldo).
 
-    For each image in the batch, assigns each anchor to either a GT box
-    (positive) or background (negative). Uses a two-pass strategy:
-    first ensures every GT has its best anchor, then adds any anchor
-    with IoU >= 0.5 to any GT box.
+    Two-pass approach:
+      1. Every GT box gets its single best anchor (so nothing is missed).
+      2. Any remaining anchor with IoU >= 0.5 also becomes positive.
 
     Args:
-        anchors: Anchor boxes of shape (num_anchors, 4) in normalized
-            [cx, cy, w, h] format.
+        anchors: Anchor boxes (num_anchors, 4) in normalised [cx, cy, w, h].
         targets: List of B target dicts, each with 'boxes' (N, 4) in
             pixel [xmin, ymin, xmax, ymax] and 'labels' (N,).
-        resolution: Image resolution in pixels, for normalizing GT boxes.
+        resolution: Image resolution in pixels, for normalising GT boxes.
 
     Returns:
-        Tuple of (cls_targets, reg_targets) where:
-            - cls_targets: (B, num_anchors) int64 class labels
-              (0=background, 1=Waldo).
-            - reg_targets: (B, num_anchors, 4) float32 regression offsets
-              [dx, dy, dw, dh] relative to matched anchors.
+        Tuple of (class_labels, box_offsets) where:
+            - class_labels: (B, num_anchors) — 0 = background, 1 = Waldo.
+            - box_offsets: (B, num_anchors, 4) — regression targets.
     """
     batch_size = len(targets)
     num_anchors = anchors.size(0)
@@ -134,7 +129,6 @@ def match_anchors_to_targets(
     cls_targets = torch.zeros(batch_size, num_anchors, dtype=torch.long, device=device)
     reg_targets = torch.zeros(batch_size, num_anchors, 4, dtype=torch.float32, device=device)
 
-    # Pre-convert anchors to xyxy for IoU computation
     anchors_xyxy = cxcywh_to_xyxy(anchors)
 
     for i, target in enumerate(targets):
@@ -143,14 +137,13 @@ def match_anchors_to_targets(
         if gt_boxes_px.numel() == 0:
             continue
 
-        # Normalize GT boxes from pixel coords to [0, 1]
+        # Scale GT from pixels to [0, 1] to match anchor coordinates
         gt_boxes_xyxy = gt_boxes_px.to(device).float() / resolution
         gt_boxes_cxcywh = xyxy_to_cxcywh(gt_boxes_xyxy)
 
-        # IoU matrix: (num_anchors, num_gt)
         iou_matrix = box_iou(anchors_xyxy, gt_boxes_xyxy)
 
-        # --- Pass 1: best anchor for each GT (guarantees every GT gets a match) ---
+        # Pass 1: guarantee every GT box has at least one positive anchor
         best_anchor_per_gt = iou_matrix.argmax(dim=0)
         for gt_idx in range(gt_boxes_xyxy.size(0)):
             anchor_idx = best_anchor_per_gt[gt_idx]
@@ -159,7 +152,7 @@ def match_anchors_to_targets(
                 anchors[anchor_idx], gt_boxes_cxcywh[gt_idx]
             )
 
-        # --- Pass 2: any anchor with IoU >= threshold gets its best GT ---
+        # Pass 2: also promote any anchor that overlaps enough with a GT
         best_iou_per_anchor, best_gt_per_anchor = iou_matrix.max(dim=1)
         positive_mask = best_iou_per_anchor >= _IOU_MATCH_THRESHOLD
 
@@ -178,11 +171,10 @@ def _encode_offsets(
     anchor: torch.Tensor,
     gt_box: torch.Tensor,
 ) -> torch.Tensor:
-    """Compute regression offsets from an anchor to a ground truth box.
+    """How far does the anchor need to shift to match the ground truth?
 
-    Both inputs are in normalized [cx, cy, w, h] format. The encoding
-    normalizes center offsets by anchor size and uses log-scale for
-    width/height, which stabilizes training for boxes of varying sizes.
+    Centre offsets are divided by anchor size so small and large
+    anchors learn on the same scale.  Width/height use log-space.
 
     Args:
         anchor: Single anchor box (4,) in [cx, cy, w, h].
@@ -191,7 +183,7 @@ def _encode_offsets(
     Returns:
         Offset tensor (4,) as [dx, dy, dw, dh].
     """
-    # Clamp anchor dimensions to prevent division by zero / log(0)
+    # Tiny clamp to avoid division-by-zero or log(0)
     anchor_w = anchor[2].clamp(min=1e-6)
     anchor_h = anchor[3].clamp(min=1e-6)
 
@@ -202,18 +194,18 @@ def _encode_offsets(
     return torch.stack([dx, dy, dw, dh])
 
 
-# =============================================================================
-# SSD LOSS WITH HARD NEGATIVE MINING
-# =============================================================================
+# ---------------------------------------------------------------------------
+# SSD loss with hard negative mining
+# ---------------------------------------------------------------------------
 
 
 class SSDLoss(nn.Module):
-    """SSD multi-box loss with hard negative mining.
+    """Classification + localisation loss, balanced by hard negative mining.
 
-    Combines classification (cross-entropy) and localization (smooth L1)
-    losses. Hard negative mining selects the most confidently wrong
-    background anchors to balance the severe class imbalance in Waldo
-    detection (~3% positive tiles).
+    Waldo tiles are hugely imbalanced (~3 % positive), so we can't
+    just average over all anchors.  Instead we keep all positives and
+    cherry-pick the hardest negatives — the background anchors the
+    model was most confused about.
 
     Attributes:
         neg_pos_ratio: Number of hard negatives per positive anchor.
@@ -225,12 +217,11 @@ class SSDLoss(nn.Module):
         neg_pos_ratio: int = NEG_POS_RATIO,
         num_classes: int = NUM_CLASSES,
     ) -> None:
-        """Initialize SSDLoss.
+        """Set up the loss function.
 
         Args:
-            neg_pos_ratio: Ratio of hard negatives to positives per image.
-                Higher values include more background examples but slow
-                convergence on positives.
+            neg_pos_ratio: How many hard negatives to keep for each positive.
+                Higher = more background examples but slower to learn Waldo.
             num_classes: Number of object classes (background + Waldo = 2).
         """
         super().__init__()
@@ -244,7 +235,7 @@ class SSDLoss(nn.Module):
         cls_targets: torch.Tensor,
         reg_targets: torch.Tensor,
     ) -> tuple[torch.Tensor, float, float]:
-        """Compute SSD loss with hard negative mining.
+        """Compute the combined classification + box-regression loss.
 
         Args:
             cls_preds: Classification logits (B, num_anchors, num_classes).
@@ -253,74 +244,70 @@ class SSDLoss(nn.Module):
             reg_targets: Ground truth regression offsets (B, num_anchors, 4).
 
         Returns:
-            Tuple of (total_loss, cls_loss_value, reg_loss_value) where
-            total_loss is the differentiable loss tensor and the other
-            two are detached float scalars for logging.
+            (total_loss, cls_loss_float, reg_loss_float) — the first is
+            differentiable for backprop, the others are for logging.
         """
         batch_size = cls_preds.size(0)
         num_anchors = cls_preds.size(1)
 
-        # --- Localization loss: only on positive anchors ---
-        pos_mask = cls_targets > 0  # (B, num_anchors)
-        num_positives = pos_mask.sum().item()
+        # Which anchors actually have a Waldo to learn from?
+        positive_mask = cls_targets > 0
+        num_positives = positive_mask.sum().item()
 
         if num_positives == 0:
-            # No positives in batch — return zero loss to avoid div-by-zero
+            # Nothing to learn this batch — zero loss avoids div-by-zero
             zero = torch.tensor(0.0, device=cls_preds.device, requires_grad=True)
             return zero, 0.0, 0.0
 
-        # Expand mask for 4 regression coordinates
-        pos_mask_loc = pos_mask.unsqueeze(2).expand_as(loc_preds)
+        # Box regression only matters for positive anchors
+        pos_mask_expanded = positive_mask.unsqueeze(2).expand_as(loc_preds)
         reg_loss = F.smooth_l1_loss(
-            loc_preds[pos_mask_loc].view(-1, 4),
-            reg_targets[pos_mask_loc].view(-1, 4),
+            loc_preds[pos_mask_expanded].view(-1, 4),
+            reg_targets[pos_mask_expanded].view(-1, 4),
             reduction="sum",
         )
 
-        # --- Classification loss: positives + hard negatives ---
-        # Compute per-anchor classification loss for mining
+        # Classification loss: we need it per-anchor first for mining
         cls_loss_all = F.cross_entropy(
             cls_preds.view(-1, self.num_classes),
             cls_targets.view(-1),
             reduction="none",
         ).view(batch_size, num_anchors)
 
-        # Zero out positive anchor losses — we'll add them back below
+        # Temporarily blank out positives so we can rank negatives
         cls_loss_neg = cls_loss_all.clone()
-        cls_loss_neg[pos_mask] = 0.0
+        cls_loss_neg[positive_mask] = 0.0
 
-        # --- Hard negative mining: keep the worst background predictions ---
-        # Sort on CPU because MPS torch.sort can produce inconsistent results
+        # Hard negative mining: keep only the background anchors the
+        # model was most wrong about (sort on CPU — MPS sort is flaky)
         cls_loss_neg_cpu = cls_loss_neg.cpu()
         _, neg_sort_idx = cls_loss_neg_cpu.sort(dim=1, descending=True)
         neg_sort_idx = neg_sort_idx.to(cls_preds.device)
 
-        # Determine how many hard negatives per image
-        num_pos_per_image = pos_mask.sum(dim=1)
+        # For each image, keep neg_pos_ratio negatives per positive
+        num_pos_per_image = positive_mask.sum(dim=1)
         num_neg_per_image = (num_pos_per_image * self.neg_pos_ratio).clamp(min=1)
 
-        # Build mask for selected hard negatives
-        neg_mask = torch.zeros_like(pos_mask, dtype=torch.bool)
+        hard_neg_mask = torch.zeros_like(positive_mask, dtype=torch.bool)
         for b in range(batch_size):
-            n_neg = int(num_neg_per_image[b].item())
-            # Select top-n hardest negative anchor indices for this image
-            hard_neg_indices = neg_sort_idx[b, :n_neg]
-            neg_mask[b, hard_neg_indices] = True
+            num_hard = int(num_neg_per_image[b].item())
+            hardest_indices = neg_sort_idx[b, :num_hard]
+            hard_neg_mask[b, hardest_indices] = True
 
-        # Combined loss over positives + hard negatives
-        selected_mask = pos_mask | neg_mask
+        # Final loss uses only positives + the hardest negatives
+        selected_mask = positive_mask | hard_neg_mask
         cls_loss = cls_loss_all[selected_mask].sum()
 
-        # Normalize by number of positive anchors across the batch
+        # Normalise by the number of positive anchors in the batch
         num_pos_float = float(num_positives)
         total_loss = (cls_loss + reg_loss) / num_pos_float
 
         return total_loss, cls_loss.item() / num_pos_float, reg_loss.item() / num_pos_float
 
 
-# =============================================================================
-# EVALUATION — AVERAGE PRECISION
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Quick validation AP (used inside the training loop)
+# ---------------------------------------------------------------------------
 
 
 def evaluate(
@@ -330,11 +317,10 @@ def evaluate(
     resolution: int,
     device: torch.device,
 ) -> float:
-    """Compute Average Precision on a dataset split.
+    """Fast AP check to see how training is going.
 
-    Lightweight AP computation for validation during training. Delegates
-    to shared helpers from src.evaluate for NMS, detection matching,
-    and 11-point AP interpolation.
+    Uses the same NMS / matching / AP helpers as the full evaluator
+    but skips the visual-example saving.
 
     Args:
         model: Trained WaldoSSD model.
@@ -348,7 +334,7 @@ def evaluate(
     """
     model.eval()
 
-    all_detections: list[tuple[float, bool]] = []
+    all_scored_detections: list[tuple[float, bool]] = []
     total_gt_boxes = 0
 
     with torch.no_grad():
@@ -371,27 +357,27 @@ def evaluate(
 
                 gt_on_device = gt_boxes_px.to(device).float()
                 dets, _ = match_detections_to_gt(boxes_px, scores_filtered, gt_on_device)
-                all_detections.extend(dets)
+                all_scored_detections.extend(dets)
 
-    ap = _compute_voc_ap(all_detections, total_gt_boxes)
+    ap = _compute_voc_ap(all_scored_detections, total_gt_boxes)
 
     model.train()
     return ap
 
 
-# =============================================================================
-# TRAINING LOOP
-# =============================================================================
+# ---------------------------------------------------------------------------
+# The main training loop
+# ---------------------------------------------------------------------------
 
 
 def train(
     config_overrides: Union[dict[str, Any], None] = None,
 ) -> float:
-    """Train the WaldoSSD model with the full pipeline.
+    """Train WaldoSSD end-to-end and return the best validation AP.
 
-    Sets up model, optimizer, scheduler, data loaders, and runs the
-    training loop with periodic validation and checkpointing. Accepts
-    config overrides for ablation experiments.
+    Everything is wired up here: model, optimiser, data loaders,
+    learning-rate schedule, checkpointing.  Pass config_overrides to
+    swap in different settings for ablation experiments.
 
     Args:
         config_overrides: Optional dict to override default config values.
@@ -404,7 +390,7 @@ def train(
     """
     overrides = config_overrides or {}
 
-    # --- Resolve configuration ---
+    # Pull out the settings we'll actually use
     resolution: int = int(overrides.get("resolution", DEFAULT_RESOLUTION))
     color_mode: str = str(overrides.get("color_mode", DEFAULT_COLOR_MODE))
     use_sobel: bool = bool(overrides.get("use_sobel", True))
@@ -427,21 +413,20 @@ def train(
     )
     logger.info("batch_size=%d, lr=%.1e, device=%s", batch_size, learning_rate, DEVICE)
 
-    # --- Model ---
+    # Build the model and its anchors
     model = WaldoSSD(
         num_classes=NUM_CLASSES,
         num_heads=num_heads,
         in_channels=in_channels,
     )
-    # Generate anchors on CPU before moving model to GPU/MPS
-    # (get_feature_map_sizes runs a dummy forward pass that needs model on CPU)
+    # Anchors must be generated on CPU first (dummy forward pass)
     anchors = model.get_anchors(resolution)
 
     model = model.to(DEVICE)
     anchors = anchors.to(DEVICE)
     logger.info("Generated %d anchors for %dpx input", anchors.size(0), resolution)
 
-    # --- Data loaders ---
+    # Set up the data pipelines
     train_loader = get_dataloader(
         split="train",
         resolution=resolution,
@@ -459,7 +444,7 @@ def train(
         batch_size=batch_size,
     )
 
-    # --- Optimizer and scheduler ---
+    # Optimiser with cosine learning-rate decay
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=learning_rate,
@@ -467,16 +452,16 @@ def train(
     )
     scheduler = CosineAnnealingLR(optimizer, T_max=num_epochs)
 
-    # --- Loss ---
+    # Loss function with hard negative mining
     criterion = SSDLoss(neg_pos_ratio=NEG_POS_RATIO, num_classes=NUM_CLASSES)
 
-    # --- Checkpoint directory ---
+    # Make sure the checkpoint folder exists
     CHECKPOINTS.mkdir(parents=True, exist_ok=True)
 
     best_val_ap: float = 0.0
     start_time = time.time()
 
-    # --- Training loop ---
+    # Go!
     for epoch in range(1, num_epochs + 1):
         model.train()
         epoch_loss = 0.0
@@ -511,7 +496,7 @@ def train(
 
         scheduler.step()
 
-        # --- Epoch logging ---
+        # Log this epoch's numbers
         avg_loss = epoch_loss / max(1, num_batches)
         avg_cls = epoch_cls_loss / max(1, num_batches)
         avg_reg = epoch_reg_loss / max(1, num_batches)
@@ -528,7 +513,7 @@ def train(
             elapsed,
         )
 
-        # --- Periodic validation ---
+        # Check validation AP every few epochs
         if epoch % _VAL_EVERY_N_EPOCHS == 0 or epoch == num_epochs:
             val_ap = evaluate(model, val_loader, anchors, resolution, DEVICE)
             logger.info("  Val AP = %.4f (best = %.4f)", val_ap, best_val_ap)
@@ -555,7 +540,7 @@ def train(
                 )
                 logger.info("  Saved new best model to %s", best_path)
 
-        # --- Periodic checkpoint ---
+        # Save a checkpoint every so often, just in case
         if epoch % _CHECKPOINT_EVERY_N_EPOCHS == 0:
             ckpt_path = CHECKPOINTS / f"checkpoint_epoch_{epoch:03d}.pth"
             torch.save(
@@ -581,9 +566,9 @@ def train(
     return best_val_ap
 
 
-# =============================================================================
-# MAIN — QUICK SANITY CHECK
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Quick smoke test when run directly
+# ---------------------------------------------------------------------------
 
 
 if __name__ == "__main__":

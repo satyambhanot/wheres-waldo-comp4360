@@ -1,8 +1,9 @@
-"""Detailed evaluation module for WaldoSSD with metrics and visual results.
+"""Scores the model's performance and saves visual examples.
 
-Computes Average Precision (PASCAL VOC 11-point), precision, recall, F1,
-and generates annotated images of TP/FP/FN examples for the final report.
-Also provides a quick AP function importable by the training loop.
+After training we want to know: how well does the model actually find
+Waldo?  This module computes the numbers (AP, precision, recall, F1)
+and also saves annotated images showing true positives, false positives,
+and the Waldos the model missed.
 
 Usage:
     python -m src.evaluate     # evaluate on test set
@@ -38,31 +39,29 @@ from src.model import WaldoSSD, decode_predictions
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# CONSTANTS
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Drawing and metric constants
+# ---------------------------------------------------------------------------
 
-# Number of recall points for PASCAL VOC 11-point AP interpolation
+# PASCAL VOC uses 11 evenly spaced recall thresholds for AP
 _AP_RECALL_POINTS: int = 11
 
-# Number of visual examples to save per category (TP, FP, FN)
-_NUM_EXAMPLES_PER_CATEGORY: int = 5
+# How many example images to save for each category (TP / FP / FN)
+_EXAMPLES_TO_SAVE: int = 5
 
-# Drawing colors in BGR for cv2
-_COLOR_GREEN_BGR: tuple[int, int, int] = (0, 255, 0)
-_COLOR_RED_BGR: tuple[int, int, int] = (0, 0, 255)
-_COLOR_WHITE_BGR: tuple[int, int, int] = (255, 255, 255)
+# Colours for drawing boxes (BGR because OpenCV)
+_GREEN: tuple[int, int, int] = (0, 255, 0)
+_RED: tuple[int, int, int] = (0, 0, 255)
+_WHITE: tuple[int, int, int] = (255, 255, 255)
 
-# Box drawing thickness in pixels
-_BOX_THICKNESS: int = 2
-
-# Font scale for cv2.putText
-_FONT_SCALE: float = 0.5
+# Visual settings for the annotated images
+_LINE_THICKNESS: int = 2
+_LABEL_FONT_SCALE: float = 0.5
 
 
-# =============================================================================
-# DETECTION MATCHING
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Matching predictions to ground truth
+# ---------------------------------------------------------------------------
 
 
 def match_detections_to_gt(
@@ -71,11 +70,11 @@ def match_detections_to_gt(
     gt_boxes: torch.Tensor,
     iou_threshold: float = IOU_THRESHOLD,
 ) -> tuple[list[tuple[float, bool]], list[int]]:
-    """Match predicted detections to ground truth boxes for a single image.
+    """For one image, figure out which predictions are right and which aren't.
 
-    Each GT box can be matched to at most one detection (highest IoU first).
-    Detections that don't match any GT are false positives. Unmatched GT
-    boxes contribute to false negatives.
+    Each GT box can only be claimed by one prediction (first come,
+    highest IoU served).  Leftover predictions are false positives,
+    and unclaimed GT boxes are false negatives.
 
     Args:
         pred_boxes: Predicted boxes (D, 4) in [xmin, ymin, xmax, ymax].
@@ -84,9 +83,9 @@ def match_detections_to_gt(
         iou_threshold: Minimum IoU to count as a match.
 
     Returns:
-        Tuple of (detections, unmatched_gt_indices) where:
-            - detections: List of (confidence, is_true_positive) tuples.
-            - unmatched_gt_indices: List of GT box indices that were missed.
+        Tuple of (detections, missed_gt_indices) where:
+            - detections: List of (confidence, is_correct) tuples.
+            - missed_gt_indices: GT indices the model failed to find.
     """
     detections: list[tuple[float, bool]] = []
     num_gt = gt_boxes.size(0) if gt_boxes.numel() > 0 else 0
@@ -121,7 +120,7 @@ def apply_nms(
     nms_threshold: float = NMS_THRESHOLD,
     confidence_threshold: float = CONFIDENCE_THRESHOLD,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Filter detections by confidence and apply Non-Maximum Suppression.
+    """Throw away low-confidence guesses and remove duplicate detections.
 
     Args:
         boxes: Predicted boxes (A, 4) in [xmin, ymin, xmax, ymax].
@@ -130,8 +129,7 @@ def apply_nms(
         confidence_threshold: Minimum score to keep a detection.
 
     Returns:
-        Tuple of (filtered_boxes, filtered_scores) after NMS.
-        Both may be empty tensors if no detections survive.
+        Tuple of (surviving_boxes, surviving_scores) after filtering.
     """
     keep_mask = scores > confidence_threshold
     boxes = boxes[keep_mask]
@@ -144,19 +142,20 @@ def apply_nms(
     return boxes[keep_nms], scores[keep_nms]
 
 
-# =============================================================================
-# AVERAGE PRECISION COMPUTATION
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Average Precision calculation (PASCAL VOC style)
+# ---------------------------------------------------------------------------
 
 
 def _compute_voc_ap(
     detections: list[tuple[float, bool]],
     total_gt: int,
 ) -> float:
-    """Compute PASCAL VOC 11-point interpolated Average Precision.
+    """Compute the PASCAL VOC 11-point interpolated Average Precision.
 
-    Sorts detections by confidence, computes the precision-recall curve,
-    then interpolates precision at 11 evenly spaced recall points.
+    We sort all detections by confidence, walk through them to build
+    a precision-recall curve, and average the best precision at 11
+    evenly spaced recall levels.
 
     Args:
         detections: List of (confidence, is_true_positive) tuples.
@@ -170,38 +169,38 @@ def _compute_voc_ap(
 
     detections.sort(key=lambda x: x[0], reverse=True)
 
-    tp_cumsum = 0
-    fp_cumsum = 0
+    running_tp = 0
+    running_fp = 0
     precisions: list[float] = []
     recalls: list[float] = []
 
-    for _, is_tp in detections:
-        if is_tp:
-            tp_cumsum += 1
+    for _, is_correct in detections:
+        if is_correct:
+            running_tp += 1
         else:
-            fp_cumsum += 1
+            running_fp += 1
 
-        precision = tp_cumsum / (tp_cumsum + fp_cumsum)
-        recall = tp_cumsum / total_gt
+        precision = running_tp / (running_tp + running_fp)
+        recall = running_tp / total_gt
         precisions.append(precision)
         recalls.append(recall)
 
-    # 11-point interpolation: for each recall threshold, take max precision
-    # at recall >= threshold (right-side maximum envelope)
+    # At each of the 11 recall thresholds, take the highest precision
+    # we ever saw at that recall level or above (the "envelope trick")
     ap = 0.0
-    for r_thresh in [i / (_AP_RECALL_POINTS - 1) for i in range(_AP_RECALL_POINTS)]:
-        max_prec = 0.0
+    for recall_threshold in [i / (_AP_RECALL_POINTS - 1) for i in range(_AP_RECALL_POINTS)]:
+        best_precision = 0.0
         for p, r in zip(precisions, recalls):
-            if r >= r_thresh:
-                max_prec = max(max_prec, p)
-        ap += max_prec
+            if r >= recall_threshold:
+                best_precision = max(best_precision, p)
+        ap += best_precision
 
     return ap / _AP_RECALL_POINTS
 
 
-# =============================================================================
-# DETAILED EVALUATION
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Full evaluation with all the metrics
+# ---------------------------------------------------------------------------
 
 
 def evaluate_detailed(
@@ -211,10 +210,10 @@ def evaluate_detailed(
     resolution: int,
     device: torch.device,
 ) -> dict[str, float]:
-    """Run full evaluation with AP, precision, recall, and F1 metrics.
+    """Run the model on every tile and compute AP, precision, recall, F1.
 
-    Processes every batch in the loader, collects all detections and GT
-    matches, then computes comprehensive metrics for the final report.
+    This is the "real" evaluation — used for the final report, not
+    the quick AP check during training.
 
     Args:
         model: Trained WaldoSSD model.
@@ -248,21 +247,21 @@ def evaluate_detailed(
                 num_gt_this = gt_boxes_px.size(0)
                 total_gt += num_gt_this
 
-                # Waldo confidence (class 1)
+                # How confident is the model that each anchor is Waldo?
                 scores = cls_probs[b, :, 1]
                 boxes = decoded_boxes[b]
 
                 boxes_filtered, scores_filtered = apply_nms(boxes, scores)
 
-                # Convert to pixel coords for GT matching
+                # Scale back to pixels so we can compare with GT
                 boxes_px = boxes_filtered * resolution
 
                 gt_on_device = gt_boxes_px.to(device).float()
                 dets, unmatched = match_detections_to_gt(boxes_px, scores_filtered, gt_on_device)
 
                 all_detections.extend(dets)
-                batch_tp = sum(1 for _, is_tp in dets if is_tp)
-                batch_fp = sum(1 for _, is_tp in dets if not is_tp)
+                batch_tp = sum(1 for _, correct in dets if correct)
+                batch_fp = sum(1 for _, correct in dets if not correct)
                 total_tp += batch_tp
                 total_fp += batch_fp
                 total_fn += len(unmatched)
@@ -289,13 +288,13 @@ def evaluate_detailed(
     }
 
 
-# =============================================================================
-# EVALUATION SUMMARY
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Pretty-printed results table
+# ---------------------------------------------------------------------------
 
 
 def print_evaluation_summary(metrics: dict[str, float]) -> None:
-    """Log a formatted summary table of evaluation metrics.
+    """Print a nicely formatted results table to the log.
 
     Args:
         metrics: Dict from evaluate_detailed with AP, precision, recall, etc.
@@ -316,16 +315,16 @@ def print_evaluation_summary(metrics: dict[str, float]) -> None:
     logger.info("=" * 50)
 
 
-# =============================================================================
-# VISUAL RESULT EXAMPLES
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Visual examples (TP / FP / FN images for the report)
+# ---------------------------------------------------------------------------
 
 
 def _tensor_to_bgr(image_tensor: torch.Tensor) -> np.ndarray:
-    """Convert a normalized image tensor back to BGR uint8 for cv2 drawing.
+    """Turn a model tensor back into a normal image OpenCV can draw on.
 
-    Only uses the first 3 channels (RGB), ignoring the Sobel channel
-    if present in 4-channel input.
+    Drops the Sobel channel (if present) and converts from the
+    normalised RGB tensor format to the BGR uint8 that cv2 expects.
 
     Args:
         image_tensor: Image tensor (C, H, W) in [0, 1] float, C=3 or 4.
@@ -347,23 +346,23 @@ def _draw_box(
     color: tuple[int, int, int],
     label: str,
 ) -> None:
-    """Draw a bounding box with label on an image in-place.
+    """Draw a labelled rectangle on the image (modifies it in place).
 
     Args:
-        img: BGR uint8 image to draw on (modified in-place).
+        img: BGR uint8 image to draw on.
         box: Box coords [xmin, ymin, xmax, ymax] in pixels.
-        color: BGR color tuple for the rectangle and text.
-        label: Text label to display above the box.
+        color: BGR colour for the rectangle and text.
+        label: Short text to show just above the box.
     """
     x1, y1 = int(box[0]), int(box[1])
     x2, y2 = int(box[2]), int(box[3])
-    cv2.rectangle(img, (x1, y1), (x2, y2), color, _BOX_THICKNESS)
+    cv2.rectangle(img, (x1, y1), (x2, y2), color, _LINE_THICKNESS)
     cv2.putText(
         img,
         label,
-        (x1, max(y1 - _BOX_THICKNESS, 0)),
+        (x1, max(y1 - _LINE_THICKNESS, 0)),
         cv2.FONT_HERSHEY_SIMPLEX,
-        _FONT_SCALE,
+        _LABEL_FONT_SCALE,
         color,
         1,
     )
@@ -373,7 +372,7 @@ def _draw_category_label(
     img: np.ndarray,
     category: str,
 ) -> None:
-    """Draw the category label (TP/FP/FN) in the top-left corner.
+    """Stamp "TP", "FP", or "FN" in the top-left corner of the image.
 
     Args:
         img: BGR uint8 image to draw on (modified in-place).
@@ -384,8 +383,8 @@ def _draw_category_label(
         category,
         (3, 15),
         cv2.FONT_HERSHEY_SIMPLEX,
-        _FONT_SCALE,
-        _COLOR_WHITE_BGR,
+        _LABEL_FONT_SCALE,
+        _WHITE,
         1,
     )
 
@@ -398,11 +397,11 @@ def save_detection_examples(
     device: torch.device,
     output_dir: Path,
 ) -> None:
-    """Save annotated images of TP, FP, and FN detection examples.
+    """Save the most interesting detection results as annotated images.
 
-    Runs inference on the entire dataset and collects the most
-    illustrative examples of each outcome category. Saves annotated
-    images with bounding boxes and a JSON summary for the final report.
+    We collect the highest-confidence correct detections (TP), the
+    highest-confidence mistakes (FP), and the missed Waldos (FN),
+    draw boxes on them, and save them for the report.
 
     Args:
         model: Trained WaldoSSD model.
@@ -415,7 +414,7 @@ def save_detection_examples(
     model.eval()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Collect examples: (confidence, image_tensor, pred_box_px, gt_boxes_px, category)
+    # We'll gather examples in three buckets
     tp_examples: list[tuple[float, torch.Tensor, list[float], torch.Tensor]] = []
     fp_examples: list[tuple[float, torch.Tensor, list[float], torch.Tensor]] = []
     fn_examples: list[tuple[torch.Tensor, list[float]]] = []
@@ -440,80 +439,78 @@ def save_detection_examples(
 
                 gt_on_device = gt_boxes_px.to(device).float()
 
-                # Reuse match_detections_to_gt for consistent logic
+                # Use the same matching logic we use everywhere else
                 dets, unmatched_gt = match_detections_to_gt(boxes_px, scores_filtered, gt_on_device)
 
-                # Classify each detection as TP or FP
-                for d_idx, (conf, is_tp) in enumerate(dets):
+                # Sort each detection into the right bucket
+                for d_idx, (conf, is_correct) in enumerate(dets):
                     pred_box_list = boxes_px[d_idx].cpu().tolist()
-                    if is_tp:
+                    if is_correct:
                         tp_examples.append((conf, img_tensor, pred_box_list, gt_boxes_px))
                     else:
                         fp_examples.append((conf, img_tensor, pred_box_list, gt_boxes_px))
 
-                # Unmatched GT boxes are false negatives
+                # GT boxes nobody found are false negatives
                 for g_idx in unmatched_gt:
                     fn_examples.append((img_tensor, gt_on_device[g_idx].cpu().tolist()))
 
-    # --- Sort and select top examples ---
-    # TPs: highest confidence correct detections
+    # Sort by confidence so we save the most interesting examples
     tp_examples.sort(key=lambda x: x[0], reverse=True)
-    # FPs: highest confidence wrong detections (most interesting errors)
     fp_examples.sort(key=lambda x: x[0], reverse=True)
 
     summary: dict[str, list[dict[str, object]]] = {"tp": [], "fp": [], "fn": []}
 
-    # --- Save True Positive examples ---
-    for i, (conf, img_t, pred_box, gt_boxes) in enumerate(tp_examples[:_NUM_EXAMPLES_PER_CATEGORY]):
+    # Save the best True Positive examples
+    for i, (conf, img_t, pred_box, gt_boxes) in enumerate(tp_examples[:_EXAMPLES_TO_SAVE]):
         img_bgr = _tensor_to_bgr(img_t)
         for gt_box in gt_boxes.tolist():
-            _draw_box(img_bgr, gt_box, _COLOR_GREEN_BGR, "GT")
-        _draw_box(img_bgr, pred_box, _COLOR_RED_BGR, f"{conf:.2f}")
+            _draw_box(img_bgr, gt_box, _GREEN, "GT")
+        _draw_box(img_bgr, pred_box, _RED, f"{conf:.2f}")
         _draw_category_label(img_bgr, "TP")
 
         filename = f"tp_{i + 1:02d}.jpg"
         cv2.imwrite(str(output_dir / filename), img_bgr)
         summary["tp"].append({"file": filename, "confidence": conf, "pred_box": pred_box})
 
-    # --- Save False Positive examples ---
-    for i, (conf, img_t, pred_box, gt_boxes) in enumerate(fp_examples[:_NUM_EXAMPLES_PER_CATEGORY]):
+    # Save the worst False Positive mistakes
+    for i, (conf, img_t, pred_box, gt_boxes) in enumerate(fp_examples[:_EXAMPLES_TO_SAVE]):
         img_bgr = _tensor_to_bgr(img_t)
         for gt_box in gt_boxes.tolist():
-            _draw_box(img_bgr, gt_box, _COLOR_GREEN_BGR, "GT")
-        _draw_box(img_bgr, pred_box, _COLOR_RED_BGR, f"{conf:.2f}")
+            _draw_box(img_bgr, gt_box, _GREEN, "GT")
+        _draw_box(img_bgr, pred_box, _RED, f"{conf:.2f}")
         _draw_category_label(img_bgr, "FP")
 
         filename = f"fp_{i + 1:02d}.jpg"
         cv2.imwrite(str(output_dir / filename), img_bgr)
         summary["fp"].append({"file": filename, "confidence": conf, "pred_box": pred_box})
 
-    # --- Save False Negative examples ---
-    for i, (img_t, gt_box) in enumerate(fn_examples[:_NUM_EXAMPLES_PER_CATEGORY]):
+    # Save examples of Waldos the model missed entirely
+    for i, (img_t, gt_box) in enumerate(fn_examples[:_EXAMPLES_TO_SAVE]):
         img_bgr = _tensor_to_bgr(img_t)
-        _draw_box(img_bgr, gt_box, _COLOR_GREEN_BGR, "GT")
+        _draw_box(img_bgr, gt_box, _GREEN, "GT")
         _draw_category_label(img_bgr, "FN - MISSED")
 
         filename = f"fn_{i + 1:02d}.jpg"
         cv2.imwrite(str(output_dir / filename), img_bgr)
         summary["fn"].append({"file": filename, "gt_box": gt_box})
 
-    # --- Save summary JSON ---
+    # Write a machine-readable summary alongside the images
     summary_path = output_dir / "examples_summary.json"
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
 
     logger.info(
         "Saved detection examples: %d TP, %d FP, %d FN to %s",
-        min(len(tp_examples), _NUM_EXAMPLES_PER_CATEGORY),
-        min(len(fp_examples), _NUM_EXAMPLES_PER_CATEGORY),
-        min(len(fn_examples), _NUM_EXAMPLES_PER_CATEGORY),
+        min(len(tp_examples), _EXAMPLES_TO_SAVE),
+        min(len(fp_examples), _EXAMPLES_TO_SAVE),
+        min(len(fn_examples), _EXAMPLES_TO_SAVE),
         output_dir,
     )
 
 
-# =============================================================================
-# MAIN - TEST SET EVALUATION
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Run evaluation on the test set when called directly
+# ---------------------------------------------------------------------------
 
 
 if __name__ == "__main__":
@@ -527,7 +524,7 @@ if __name__ == "__main__":
     use_sobel = True
     in_channels = 4 if use_sobel else 3
 
-    # --- Load or create model ---
+    # Build the model and load the best checkpoint (if one exists)
     model = WaldoSSD(
         num_classes=NUM_CLASSES,
         num_heads=NUM_SSD_HEADS,
@@ -545,12 +542,12 @@ if __name__ == "__main__":
             checkpoint_path,
         )
 
-    # Generate anchors before moving model to device
+    # Anchors first (needs a CPU forward pass), then move to device
     anchors = model.get_anchors(resolution)
     model = model.to(DEVICE)
     anchors = anchors.to(DEVICE)
 
-    # --- Test set DataLoader ---
+    # Load the test tiles
     test_loader = get_dataloader(
         split="test",
         resolution=resolution,
@@ -560,12 +557,12 @@ if __name__ == "__main__":
         batch_size=BATCH_SIZE,
     )
 
-    # --- Run detailed evaluation ---
+    # Compute all the metrics
     logger.info("Running detailed evaluation on test set (%dpx)...", resolution)
     metrics = evaluate_detailed(model, test_loader, anchors, resolution, DEVICE)
     print_evaluation_summary(metrics)
 
-    # --- Save visual examples ---
+    # Save annotated example images for the report
     plots_dir = RESULTS / "plots"
     logger.info("Saving detection examples to %s...", plots_dir)
     save_detection_examples(model, test_loader, anchors, resolution, DEVICE, plots_dir)
