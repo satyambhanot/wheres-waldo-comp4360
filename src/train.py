@@ -442,7 +442,12 @@ def train(
     # Make sure the checkpoint folder exists
     CHECKPOINTS.mkdir(parents=True, exist_ok=True)
 
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info("Model: %.2fM params (%.2fM trainable)", total_params / 1e6, trainable_params / 1e6)
+
     best_val_ap: float = 0.0
+    best_epoch: int = 0
     epochs_without_improvement: int = 0
     start_epoch: int = 1
     training_history: list[dict[str, float]] = []
@@ -531,6 +536,7 @@ def train(
 
             if val_ap > best_val_ap:
                 best_val_ap = val_ap
+                best_epoch = epoch
                 epochs_without_improvement = 0
                 best_path = CHECKPOINTS / f"{checkpoint_prefix}.pth"
                 torch.save(
@@ -603,7 +609,16 @@ def train(
                     "learning_rate": learning_rate,
                     "num_epochs": num_epochs,
                 },
+                "model": {
+                    "total_params": total_params,
+                    "trainable_params": trainable_params,
+                },
+                "dataset": {
+                    "train_tiles": len(train_loader.dataset),
+                    "val_tiles": len(val_loader.dataset),
+                },
                 "best_val_ap": best_val_ap,
+                "best_epoch": best_epoch,
                 "total_time_seconds": round(total_time, 1),
                 "epochs": training_history,
             },

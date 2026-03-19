@@ -411,7 +411,44 @@ def run_tiling_pipeline(
 
     # Now that all tiles exist, decide which images go to which split
     logger.info("Creating train/val/test splits...")
-    create_splits(DATA_PROCESSED)
+    splits = create_splits(DATA_PROCESSED)
+
+    # Save a dataset manifest for the report (tile counts per split per resolution)
+    manifest: dict = {
+        "resolutions": resolutions,
+        "splits": {},
+        "totals": {},
+    }
+    for res in resolutions:
+        tile_dir = DATA_PROCESSED / str(res)
+        res_key = f"{res}px"
+        manifest["totals"][res_key] = {
+            "waldo": results[res][0],
+            "background": results[res][1],
+            "total": results[res][0] + results[res][1],
+        }
+        for split_name, image_names in splits.items():
+            names_set = set(image_names)
+            split_tiles = [
+                f for f in tile_dir.glob("*.jpg")
+                if f.stem.rsplit("_tile_", 1)[0] in names_set
+            ]
+            waldo_count = sum(
+                1 for f in split_tiles
+                if f.with_suffix(".txt").exists() and f.with_suffix(".txt").stat().st_size > 0
+            )
+            if split_name not in manifest["splits"]:
+                manifest["splits"][split_name] = {"images": len(image_names)}
+            manifest["splits"][split_name][res_key] = {
+                "total": len(split_tiles),
+                "waldo": waldo_count,
+                "background": len(split_tiles) - waldo_count,
+            }
+
+    manifest_path = DATA_PROCESSED / "dataset_manifest.json"
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+    logger.info("Saved dataset manifest to %s", manifest_path)
 
     return results
 

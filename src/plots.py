@@ -275,6 +275,110 @@ def plot_ablation_pr_overlay(ablation_dir: Path, output_dir: Path) -> None:
         logger.info("Saved %s PR overlay to %s", group_name, out_path)
 
 
+# ---- Confidence score histogram ----
+
+
+def plot_confidence_histogram(pr_path: Path, output_dir: Path) -> None:
+    """Histogram of detection confidence scores split by TP vs FP."""
+    with open(pr_path) as f:
+        pr_data = json.load(f)
+
+    confidences = pr_data.get("confidences", [])
+    precisions = pr_data.get("precisions", [])
+    recalls = pr_data.get("recalls", [])
+
+    if not confidences:
+        return
+
+    # Reconstruct TP/FP labels from the running precision/recall
+    tp_confs: list[float] = []
+    fp_confs: list[float] = []
+    running_tp = 0
+    running_fp = 0
+    for i, conf in enumerate(confidences):
+        new_tp = round(recalls[i] * len(confidences)) if recalls else 0
+        if i == 0:
+            is_tp = precisions[0] == 1.0
+        else:
+            prev_tp = round(recalls[i - 1] * len(confidences)) if recalls[i - 1] > 0 else 0
+            curr_tp = round(recalls[i] * len(confidences))
+            is_tp = curr_tp > prev_tp
+
+        if is_tp:
+            tp_confs.append(conf)
+        else:
+            fp_confs.append(conf)
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    bins = np.linspace(0, 1, 25)
+    if tp_confs:
+        ax.hist(tp_confs, bins=bins, alpha=0.7, label=f"TP ({len(tp_confs)})", color="#4CAF50")
+    if fp_confs:
+        ax.hist(fp_confs, bins=bins, alpha=0.7, label=f"FP ({len(fp_confs)})", color="#FF5722")
+    ax.set_xlabel("Confidence Score")
+    ax.set_ylabel("Count")
+    ax.set_title("Detection Confidence Distribution")
+    ax.legend()
+    ax.grid(True, axis="y", alpha=0.3)
+
+    fig.tight_layout()
+    stem = pr_path.stem.replace("_pr_curve", "").replace("pr_curve", "baseline")
+    out_path = output_dir / f"{stem}_confidence_hist.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved confidence histogram to %s", out_path)
+
+
+# ---- Dataset summary table ----
+
+
+def plot_dataset_summary(manifest_path: Path, output_dir: Path) -> None:
+    """Bar chart of tile counts per split and resolution from the dataset manifest."""
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+
+    splits = manifest.get("splits", {})
+    resolutions = manifest.get("resolutions", [])
+    if not splits or not resolutions:
+        return
+
+    fig, axes = plt.subplots(1, len(resolutions), figsize=(5 * len(resolutions), 4))
+    if len(resolutions) == 1:
+        axes = [axes]
+
+    for idx, res in enumerate(resolutions):
+        ax = axes[idx]
+        res_key = f"{res}px"
+        split_names = []
+        waldo_counts = []
+        bg_counts = []
+        for split_name in ["train", "val", "test"]:
+            if split_name in splits and res_key in splits[split_name]:
+                split_names.append(split_name)
+                waldo_counts.append(splits[split_name][res_key]["waldo"])
+                bg_counts.append(splits[split_name][res_key]["background"])
+
+        x = np.arange(len(split_names))
+        ax.bar(x - 0.15, waldo_counts, 0.3, label="Waldo", color="#FF5722")
+        ax.bar(x + 0.15, bg_counts, 0.3, label="Background", color="#2196F3")
+        for i in range(len(split_names)):
+            total = waldo_counts[i] + bg_counts[i]
+            ax.text(i, total + 1, str(total), ha="center", fontsize=8)
+        ax.set_xticks(x)
+        ax.set_xticklabels(split_names)
+        ax.set_title(f"{res}px tiles")
+        ax.set_ylabel("Tile count")
+        ax.legend(fontsize=7)
+        ax.grid(True, axis="y", alpha=0.3)
+
+    fig.suptitle("Dataset Split Distribution", fontsize=12)
+    fig.tight_layout()
+    out_path = output_dir / "dataset_summary.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved dataset summary to %s", out_path)
+
+
 # Main
 
 
@@ -287,10 +391,18 @@ def generate_all_plots() -> None:
         for hist_path in sorted(training_dir.glob("*_history.json")):
             plot_training_curves(hist_path, _PLOTS_DIR)
 
+    # Dataset summary from manifest
+    from src.config import DATA_PROCESSED
+
+    manifest_path = DATA_PROCESSED / "dataset_manifest.json"
+    if manifest_path.exists():
+        plot_dataset_summary(manifest_path, _PLOTS_DIR)
+
     metrics_dir = RESULTS / "metrics"
     pr_path = metrics_dir / "pr_curve.json"
     if pr_path.exists():
         plot_pr_curve(pr_path, _PLOTS_DIR, title="Baseline — Precision-Recall Curve")
+        plot_confidence_histogram(pr_path, _PLOTS_DIR)
 
     ablation_dir = RESULTS / "ablations"
     all_results_path = ablation_dir / "all_results.json"

@@ -366,7 +366,7 @@ def run_experiment(
         model = model.to(DEVICE)
         anchors = anchors.to(DEVICE)
 
-        best_val_ap = _train_pruned_model(model, anchors, config)
+        best_val_ap, best_epoch = _train_pruned_model(model, anchors, config)
     else:
         best_val_ap = train(
             config_overrides=config,
@@ -379,9 +379,11 @@ def run_experiment(
             num_heads=num_heads,
             in_channels=in_channels,
         )
+        best_epoch = 0
         if exp_ckpt_path.exists():
             checkpoint = torch.load(exp_ckpt_path, map_location="cpu", weights_only=True)
             model.load_state_dict(checkpoint["model_state_dict"])
+            best_epoch = checkpoint.get("epoch", 0)
 
     training_time_min = (time.time() - train_start) / 60.0
 
@@ -430,6 +432,8 @@ def run_experiment(
             "num_fn": metrics["num_fn"],
             "num_gt": metrics["num_gt"],
             "best_val_ap": best_val_ap,
+            "best_epoch": best_epoch,
+            "test_tiles": len(test_loader.dataset),
         },
         "efficiency": {
             "param_count": param_count,
@@ -459,11 +463,8 @@ def _train_pruned_model(
     model: WaldoSSD,
     anchors: torch.Tensor,
     config: dict[str, Any],
-) -> float:
+) -> tuple[float, int]:
     """Train the pruned model (its custom layers mean we can't use train()).
-
-    This is a stripped-down copy of the main training loop, just enough
-    to get the pruned model trained and validated.
 
     Args:
         model: Pre-constructed pruned WaldoSSD already on DEVICE.
@@ -471,7 +472,7 @@ def _train_pruned_model(
         config: Experiment config dict with resolution, color_mode, etc.
 
     Returns:
-        Best validation AP achieved during training.
+        Tuple of (best_val_ap, best_epoch).
     """
     from torch.optim.lr_scheduler import CosineAnnealingLR
 
@@ -510,7 +511,7 @@ def _train_pruned_model(
     criterion = SSDLoss(neg_pos_ratio=NEG_POS_RATIO, num_classes=NUM_CLASSES)
 
     best_val_ap: float = 0.0
-    # Remember the best weights so we evaluate the peak, not the end
+    best_epoch: int = 0
     best_state: dict[str, object] = {}
 
     for epoch in range(1, NUM_EPOCHS + 1):
@@ -546,13 +547,13 @@ def _train_pruned_model(
             )
             if val_ap > best_val_ap:
                 best_val_ap = val_ap
+                best_epoch = epoch
                 best_state = copy.deepcopy(model.state_dict())
 
-    # Roll back to the weights that scored highest on validation
     if best_state:
         model.load_state_dict(best_state)  # type: ignore[arg-type]
 
-    return best_val_ap
+    return best_val_ap, best_epoch
 
 
 # ---- Run all ----
