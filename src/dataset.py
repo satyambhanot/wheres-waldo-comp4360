@@ -338,8 +338,8 @@ class WaldoDataset(Dataset):
     ) -> tuple[np.ndarray, list[list[float]], Optional[np.ndarray]]:
         """Add a bit of randomness so the model doesn't memorise tiles.
 
-        Right now we randomly flip horizontally and jitter the colour.
-        Both the boxes and the Sobel map are adjusted to match.
+        Applies horizontal flip, vertical flip, small rotation, and
+        colour jitter. Boxes and the Sobel map are adjusted to match.
 
         Args:
             img: RGB image array (H, W, 3).
@@ -357,6 +357,41 @@ class WaldoDataset(Dataset):
             boxes = [[w - b[2], b[1], w - b[0], b[3]] for b in boxes]
             if sobel_channel is not None:
                 sobel_channel = np.fliplr(sobel_channel).copy()
+
+        # Coin flip: mirror the tile top-to-bottom
+        if np.random.random() > 0.5:
+            img = np.flipud(img).copy()
+            boxes = [[b[0], h - b[3], b[2], h - b[1]] for b in boxes]
+            if sobel_channel is not None:
+                sobel_channel = np.flipud(sobel_channel).copy()
+
+        # Coin flip: small rotation (+-15 degrees) with box adjustment
+        if np.random.random() > 0.5:
+            angle = np.random.uniform(-15, 15)
+            center = (w / 2.0, h / 2.0)
+            rot_mat = cv2.getRotationMatrix2D(center, angle, 1.0)
+            img = cv2.warpAffine(img, rot_mat, (w, h), borderMode=cv2.BORDER_REFLECT_101)
+            if sobel_channel is not None:
+                sobel_channel = cv2.warpAffine(
+                    sobel_channel, rot_mat, (w, h), borderMode=cv2.BORDER_REFLECT_101
+                )
+            # Rotate each box corner and take the axis-aligned bounding rect
+            new_boxes: list[list[float]] = []
+            for b in boxes:
+                corners = np.array(
+                    [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]],
+                    dtype=np.float64,
+                )
+                ones = np.ones((corners.shape[0], 1), dtype=np.float64)
+                corners_h = np.hstack([corners, ones])
+                rotated = (rot_mat @ corners_h.T).T
+                new_xmin = max(0.0, float(rotated[:, 0].min()))
+                new_ymin = max(0.0, float(rotated[:, 1].min()))
+                new_xmax = min(float(w), float(rotated[:, 0].max()))
+                new_ymax = min(float(h), float(rotated[:, 1].max()))
+                if new_xmax > new_xmin and new_ymax > new_ymin:
+                    new_boxes.append([new_xmin, new_ymin, new_xmax, new_ymax])
+            boxes = new_boxes
 
         # Coin flip: slightly tweak saturation and brightness
         if self.color_mode == "color" and np.random.random() > 0.5:
