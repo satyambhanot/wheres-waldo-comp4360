@@ -1,13 +1,4 @@
-"""Scores the model's performance and saves visual examples.
-
-After training we want to know: how well does the model actually find
-Waldo?  This module computes the numbers (AP, precision, recall, F1)
-and also saves annotated images showing true positives, false positives,
-and the Waldos the model missed.
-
-Usage:
-    python -m src.evaluate     # evaluate on test set
-"""
+"""Evaluation metrics and visual detection examples."""
 
 import json
 import logging
@@ -157,9 +148,8 @@ def _compute_voc_ap(
 ) -> float:
     """Compute the PASCAL VOC 11-point interpolated Average Precision.
 
-    We sort all detections by confidence, walk through them to build
-    a precision-recall curve, and average the best precision at 11
-    evenly spaced recall levels.
+    Sorts detections by confidence, builds a precision-recall curve,
+    and averages the best precision at 11 evenly spaced recall levels.
 
     Args:
         detections: List of (confidence, is_true_positive) tuples.
@@ -295,7 +285,7 @@ def evaluate_detailed(
                 num_gt_this = gt_boxes_px.size(0)
                 total_gt += num_gt_this
 
-                # How confident is the model that each anchor is Waldo?
+                # Waldo confidence scores
                 scores = cls_probs[b, :, 1]
                 boxes = decoded_boxes[b]
 
@@ -371,18 +361,7 @@ def print_evaluation_summary(metrics: dict[str, float]) -> None:
 
 
 def _tensor_to_bgr(image_tensor: torch.Tensor) -> np.ndarray:
-    """Turn a model tensor back into a normal image OpenCV can draw on.
-
-    Drops the Sobel channel (if present) and converts from the
-    normalised RGB tensor format to the BGR uint8 that cv2 expects.
-
-    Args:
-        image_tensor: Image tensor (C, H, W) in [0, 1] float, C=3 or 4.
-
-    Returns:
-        BGR uint8 numpy array (H, W, 3) suitable for cv2 operations.
-    """
-    # Take only RGB channels, drop Sobel if present
+    """Convert (C,H,W) float tensor to BGR uint8 for OpenCV."""
     rgb = image_tensor[:3].cpu().numpy()
     rgb = np.transpose(rgb, (1, 2, 0))
     rgb = (rgb * 255).clip(0, 255).astype(np.uint8)
@@ -396,14 +375,7 @@ def _draw_box(
     color: tuple[int, int, int],
     label: str,
 ) -> None:
-    """Draw a labelled rectangle on the image (modifies it in place).
-
-    Args:
-        img: BGR uint8 image to draw on.
-        box: Box coords [xmin, ymin, xmax, ymax] in pixels.
-        color: BGR colour for the rectangle and text.
-        label: Short text to show just above the box.
-    """
+    """Draw a labelled rectangle on the image (in place)."""
     x1, y1 = int(box[0]), int(box[1])
     x2, y2 = int(box[2]), int(box[3])
     cv2.rectangle(img, (x1, y1), (x2, y2), color, _LINE_THICKNESS)
@@ -422,12 +394,7 @@ def _draw_category_label(
     img: np.ndarray,
     category: str,
 ) -> None:
-    """Stamp "TP", "FP", or "FN" in the top-left corner of the image.
-
-    Args:
-        img: BGR uint8 image to draw on (modified in-place).
-        category: Category string ("TP", "FP", or "FN").
-    """
+    """Stamp TP/FP/FN label in the top-left corner."""
     cv2.putText(
         img,
         category,
@@ -449,9 +416,8 @@ def save_detection_examples(
 ) -> None:
     """Save the most interesting detection results as annotated images.
 
-    We collect the highest-confidence correct detections (TP), the
-    highest-confidence mistakes (FP), and the missed Waldos (FN),
-    draw boxes on them, and save them for the report.
+    Collects highest-confidence TPs, FPs, and missed FNs,
+    draws boxes on them, and saves for the report.
 
     Args:
         model: Trained WaldoSSD model.
@@ -464,7 +430,7 @@ def save_detection_examples(
     model.eval()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # We'll gather examples in three buckets
+    # Collect examples in three buckets
     tp_examples: list[tuple[float, torch.Tensor, list[float], torch.Tensor]] = []
     fp_examples: list[tuple[float, torch.Tensor, list[float], torch.Tensor]] = []
     fn_examples: list[tuple[torch.Tensor, list[float]]] = []

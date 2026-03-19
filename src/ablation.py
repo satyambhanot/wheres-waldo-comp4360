@@ -192,11 +192,7 @@ _EXECUTION_ORDER: list[str] = [
 
 
 def set_seed(seed: int = _SEED) -> None:
-    """Lock down every random number generator so results are repeatable.
-
-    Args:
-        seed: Random seed value (default 42).
-    """
+    """Fix all RNG seeds for reproducibility."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -268,8 +264,7 @@ def measure_inference_time(
 ) -> float:
     """How many milliseconds does one forward pass take?
 
-    We warm up the GPU first (clocks, caches), then time a batch of
-    runs with proper synchronisation.
+    Runs warmup passes first, then times with proper synchronisation.
 
     Args:
         model: WaldoSSD model to benchmark.
@@ -282,7 +277,7 @@ def measure_inference_time(
     model.eval()
     dummy = torch.randn(1, model.in_channels, resolution, resolution, device=device)
 
-    # Let the hardware settle before we start the stopwatch
+    # Warmup runs
     with torch.no_grad():
         for _ in range(_WARMUP_RUNS):
             model(dummy)

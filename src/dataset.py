@@ -1,8 +1,4 @@
-"""PyTorch Dataset and DataLoader for the tiled Waldo images.
-
-Loads tiles from disk, applies colour mode conversion and optional
-Sobel edge stacking, and serves (image, target) pairs for training.
-"""
+"""PyTorch Dataset/DataLoader for Waldo tiles."""
 
 from __future__ import annotations
 
@@ -80,7 +76,7 @@ class WaldoDataset(Dataset):
         self.use_sobel = use_sobel
         self.augment = augment
 
-        # Figure out which original images belong to this split
+        # Load split membership
         splits_path = DATA_PROCESSED / "splits.json"
         if not splits_path.exists():
             raise FileNotFoundError(
@@ -129,9 +125,8 @@ class WaldoDataset(Dataset):
     ) -> list[Path]:
         """Throw away tiles that are mostly blank background.
 
-        We always keep tiles that contain Waldo, no matter how low
-        their edge density is.  For background tiles, we only keep the
-        ones that have enough going on to be worth training on.
+        Always keeps Waldo tiles regardless of density. For background
+        tiles, only keeps ones above the density threshold.
 
         Uses pre-computed density scores from the tiling pipeline when
         available; falls back to computing on the fly if the cache is
@@ -186,14 +181,7 @@ class WaldoDataset(Dataset):
         return filtered
 
     def _has_labels(self, tile_path: Path) -> bool:
-        """Does this tile actually contain Waldo?
-
-        Args:
-            tile_path: Path to the tile .jpg file.
-
-        Returns:
-            True if the matching .txt label file is non-empty.
-        """
+        """Check if tile's label file is non-empty."""
         label_path = tile_path.with_suffix(".txt")
         if not label_path.exists():
             return False
@@ -338,10 +326,7 @@ class WaldoDataset(Dataset):
         boxes: list[list[float]],
         sobel_channel: np.ndarray | None = None,
     ) -> tuple[np.ndarray, list[list[float]], np.ndarray | None]:
-        """Add a bit of randomness so the model doesn't memorise tiles.
-
-        Applies horizontal flip, vertical flip, small rotation, and
-        colour jitter. Boxes and the Sobel map are adjusted to match.
+        """Apply random augmentations (flip, rotation, jitter) to a tile.
 
         Args:
             img: RGB image array (H, W, 3).
@@ -353,21 +338,21 @@ class WaldoDataset(Dataset):
         """
         h, w = img.shape[:2]
 
-        # Coin flip: mirror the tile left-to-right
+        # Random horizontal flip
         if np.random.random() > 0.5:
             img = np.fliplr(img).copy()
             boxes = [[w - b[2], b[1], w - b[0], b[3]] for b in boxes]
             if sobel_channel is not None:
                 sobel_channel = np.fliplr(sobel_channel).copy()
 
-        # Coin flip: mirror the tile top-to-bottom
+        # Random vertical flip
         if np.random.random() > 0.5:
             img = np.flipud(img).copy()
             boxes = [[b[0], h - b[3], b[2], h - b[1]] for b in boxes]
             if sobel_channel is not None:
                 sobel_channel = np.flipud(sobel_channel).copy()
 
-        # Coin flip: small rotation (+-15 degrees) with box adjustment
+        # Random small rotation
         if np.random.random() > 0.5:
             angle = np.random.uniform(-15, 15)
             center = (w / 2.0, h / 2.0)
@@ -395,7 +380,7 @@ class WaldoDataset(Dataset):
                     new_boxes.append([new_xmin, new_ymin, new_xmax, new_ymax])
             boxes = new_boxes
 
-        # Coin flip: slightly tweak saturation and brightness
+        # Random colour jitter
         if self.color_mode == "color" and np.random.random() > 0.5:
             hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV).astype(np.float32)
             hsv[:, :, 1] *= np.random.uniform(0.8, 1.2)
@@ -406,26 +391,13 @@ class WaldoDataset(Dataset):
         return img, boxes, sobel_channel
 
 
-# ---- DataLoader helpers ----
+# --- DataLoader helpers ---
 
 
 def collate_fn(
     batch: list[tuple[torch.Tensor, dict[str, torch.Tensor]]],
 ) -> tuple[torch.Tensor, list[dict[str, torch.Tensor]]]:
-    """Stack images into a batch while keeping targets as a list.
-
-    PyTorch's default collate chokes because different tiles have
-    different numbers of bounding boxes.  We just stack the images
-    and leave the target dicts in a plain list.
-
-    Args:
-        batch: List of (image_tensor, target_dict) tuples from Dataset.
-
-    Returns:
-        Tuple of (batched_images, list_of_targets) where:
-            - batched_images: (B, C, H, W) float32 tensor.
-            - list_of_targets: List of B target dicts.
-    """
+    """Default collate can't handle variable-length boxes, so we stack images and keep targets as a list."""
     images = torch.stack([item[0] for item in batch])
     targets = [item[1] for item in batch]
     return images, targets

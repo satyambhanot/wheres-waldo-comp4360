@@ -1,11 +1,4 @@
-"""Generates all report figures from saved JSON results.
-
-Reads training histories, evaluation metrics, PR curves, and ablation
-results, then produces matplotlib plots for the report.
-
-Usage:
-    python -m src.plots              # generate all plots
-"""
+"""Plot generation from saved experiment results."""
 
 import json
 import logging
@@ -31,19 +24,11 @@ _COLORS: list[str] = [
 ]
 
 
-# ---- Training curves ----
+# --- Training curves ---
 
 
 def plot_training_curves(history_path: Path, output_dir: Path) -> None:
-    """Plot loss curves and LR schedule from a training history JSON.
-
-    Produces three subplots: total/cls/reg loss, validation AP, and
-    learning rate, all vs epoch.
-
-    Args:
-        history_path: Path to a *_history.json file.
-        output_dir: Directory to save the plot.
-    """
+    """Plot loss, val AP, and LR schedule from a training history JSON."""
     with open(history_path) as f:
         data = json.load(f)
 
@@ -62,7 +47,6 @@ def plot_training_curves(history_path: Path, output_dir: Path) -> None:
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-    # Loss curves
     ax = axes[0]
     ax.plot(epochs, losses, label="Total", linewidth=1.5)
     ax.plot(epochs, cls_losses, label="Classification", linewidth=1, alpha=0.7)
@@ -73,7 +57,6 @@ def plot_training_curves(history_path: Path, output_dir: Path) -> None:
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
-    # Validation AP
     ax = axes[1]
     if val_epochs:
         ax.plot(val_epochs, val_aps, "o-", color="#4CAF50", markersize=3)
@@ -85,7 +68,6 @@ def plot_training_curves(history_path: Path, output_dir: Path) -> None:
     ax.set_title("Validation AP")
     ax.grid(True, alpha=0.3)
 
-    # Learning rate
     ax = axes[2]
     ax.plot(epochs, lrs, color="#FF9800")
     ax.set_xlabel("Epoch")
@@ -106,13 +88,7 @@ def plot_training_curves(history_path: Path, output_dir: Path) -> None:
 
 
 def plot_pr_curve(pr_path: Path, output_dir: Path, title: str = "Precision-Recall Curve") -> None:
-    """Plot a precision-recall curve from saved PR data.
-
-    Args:
-        pr_path: Path to a pr_curve.json file.
-        output_dir: Directory to save the plot.
-        title: Plot title.
-    """
+    """Plot precision-recall curve from saved PR data."""
     with open(pr_path) as f:
         pr_data = json.load(f)
 
@@ -127,7 +103,6 @@ def plot_pr_curve(pr_path: Path, output_dir: Path, title: str = "Precision-Recal
     fig, ax = plt.subplots(figsize=(6, 5))
     ax.plot(recalls, precisions, color="#2196F3", linewidth=1, alpha=0.5, label="Raw")
 
-    # 11-point interpolated curve
     recall_points = [i / 10.0 for i in range(11)]
     if interp:
         ax.step(recall_points, interp, where="post", color="#FF5722",
@@ -152,15 +127,7 @@ def plot_pr_curve(pr_path: Path, output_dir: Path, title: str = "Precision-Recal
 
 
 def plot_ablation_comparison(all_results_path: Path, output_dir: Path) -> None:
-    """Generate grouped bar charts comparing all ablation experiments.
-
-    Produces one figure per ablation study (4 total), each with AP,
-    precision, recall, and F1 side by side.
-
-    Args:
-        all_results_path: Path to all_results.json.
-        output_dir: Directory to save the plots.
-    """
+    """Grouped bar charts comparing ablation experiments."""
     with open(all_results_path) as f:
         all_results = json.load(f)
 
@@ -211,17 +178,11 @@ def plot_ablation_comparison(all_results_path: Path, output_dir: Path) -> None:
         plt.close(fig)
         logger.info("Saved %s to %s", group_name, out_path)
 
-    # Also generate an efficiency comparison (params vs inference time)
     _plot_efficiency_comparison(all_results, output_dir)
 
 
 def _plot_efficiency_comparison(all_results: dict, output_dir: Path) -> None:
-    """Scatter plot of model size vs inference speed, colored by AP.
-
-    Args:
-        all_results: Dict mapping experiment keys to result dicts.
-        output_dir: Directory to save the plot.
-    """
+    """Scatter plot of model size vs inference speed, colored by AP."""
     # Deduplicate baseline aliases
     seen_configs: set[str] = set()
     keys_to_plot: list[str] = []
@@ -265,12 +226,7 @@ def _plot_efficiency_comparison(all_results: dict, output_dir: Path) -> None:
 
 
 def plot_ablation_pr_overlay(ablation_dir: Path, output_dir: Path) -> None:
-    """Overlay PR curves from all ablation experiments on one plot per group.
-
-    Args:
-        ablation_dir: Directory containing *_pr_curve.json files.
-        output_dir: Directory to save the plots.
-    """
+    """Overlay PR curves from all ablation experiments on one plot per group."""
     ablation_groups = [
         ("Ablation 1 - Sobel", ["abl1_sobel_on", "abl1_sobel_off"]),
         ("Ablation 2 - Resolution", ["abl2_res256", "abl2_res128", "abl2_res64"]),
@@ -319,32 +275,28 @@ def plot_ablation_pr_overlay(ablation_dir: Path, output_dir: Path) -> None:
         logger.info("Saved %s PR overlay to %s", group_name, out_path)
 
 
-# ---- Main: generate everything ----
+# Main
 
 
 def generate_all_plots() -> None:
     """Find all saved results and generate every report figure."""
     _PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Training curves from any history JSON files
     training_dir = RESULTS / "training"
     if training_dir.exists():
         for hist_path in sorted(training_dir.glob("*_history.json")):
             plot_training_curves(hist_path, _PLOTS_DIR)
 
-    # Baseline PR curve
     metrics_dir = RESULTS / "metrics"
     pr_path = metrics_dir / "pr_curve.json"
     if pr_path.exists():
         plot_pr_curve(pr_path, _PLOTS_DIR, title="Baseline — Precision-Recall Curve")
 
-    # Ablation comparisons
     ablation_dir = RESULTS / "ablations"
     all_results_path = ablation_dir / "all_results.json"
     if all_results_path.exists():
         plot_ablation_comparison(all_results_path, _PLOTS_DIR)
 
-    # Ablation PR curve overlays
     if ablation_dir.exists():
         plot_ablation_pr_overlay(ablation_dir, _PLOTS_DIR)
 

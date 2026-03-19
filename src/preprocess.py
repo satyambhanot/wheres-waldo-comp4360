@@ -1,9 +1,4 @@
-"""Tiling pipeline for the Where's Waldo detection project.
-
-Slices each of the 19 original puzzle images into overlapping tiles
-at 64/128/256 px with matching YOLO label files. Also provides HSV
-colour masking and Sobel edge detection used during training.
-"""
+"""Tiling pipeline and Sobel preprocessing."""
 
 from __future__ import annotations
 
@@ -39,7 +34,7 @@ from src.config import (
 logger = logging.getLogger(__name__)
 
 
-# ---- Annotation parsing ----
+# --- Annotation parsing ---
 
 
 def parse_voc_annotation(xml_path: Path) -> dict:
@@ -143,15 +138,7 @@ def clip_box_to_tile(
     waldo_box: list[int],
     tile_box: list[int],
 ) -> list[int]:
-    """Clip Waldo's box to the tile boundary and convert to tile-local coords.
-
-    Args:
-        waldo_box: Waldo box in absolute coords [xmin, ymin, xmax, ymax].
-        tile_box: Tile box in absolute coords [xmin, ymin, xmax, ymax].
-
-    Returns:
-        Clipped box relative to tile origin [xmin, ymin, xmax, ymax].
-    """
+    """Clip a box to the tile boundary and return tile-local coords."""
     rel_xmin = max(waldo_box[0], tile_box[0]) - tile_box[0]
     rel_ymin = max(waldo_box[1], tile_box[1]) - tile_box[1]
     rel_xmax = min(waldo_box[2], tile_box[2]) - tile_box[0]
@@ -161,19 +148,7 @@ def clip_box_to_tile(
 
 
 def format_yolo_line(class_id: int, box: list[int], tile_size: int) -> str:
-    """Turn a pixel-coordinate box into a YOLO annotation line.
-
-    YOLO wants: class_id  centre_x  centre_y  width  height
-    with every value normalised to [0, 1] relative to the tile.
-
-    Args:
-        class_id: Object class (0 for Waldo).
-        box: Box in tile-relative pixel coords [xmin, ymin, xmax, ymax].
-        tile_size: Tile size in pixels (used for normalization).
-
-    Returns:
-        YOLO-format annotation string.
-    """
+    """Convert pixel-coordinate box to a YOLO annotation line."""
     centre_x = (box[0] + box[2]) / 2.0 / tile_size
     centre_y = (box[1] + box[3]) / 2.0 / tile_size
     box_width = (box[2] - box[0]) / tile_size
@@ -226,7 +201,7 @@ def tile_single_image(
     waldo_boxes = annotation["boxes"]
     img_h, img_w = img.shape[:2]
 
-    # A little overlap between neighbouring tiles keeps Waldo whole
+    # Overlap to avoid cutting Waldo at boundaries
     stride = int(resolution * (1.0 - TILE_OVERLAP))
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -242,7 +217,7 @@ def tile_single_image(
             tile = img[y : y + resolution, x : x + resolution]
             tile_box = [x, y, x + resolution, y + resolution]
 
-            # Does this tile contain (enough of) Waldo?
+            # Check overlap with GT boxes
             label_lines: list[str] = []
             for waldo_box in waldo_boxes:
                 overlap = compute_overlap_ratio(waldo_box, tile_box)
@@ -293,8 +268,8 @@ def tile_single_image(
 def create_splits(processed_dir: Path) -> dict[str, list[str]]:
     """Divide the original images into train, val, and test groups.
 
-    We split at the *image* level, not the tile level, so tiles from
-    the same puzzle picture never leak across splits.
+    Splits at the *image* level so tiles from the same puzzle
+    never leak across splits.
 
     Args:
         processed_dir: Path to data/processed/ directory. The splits
@@ -304,7 +279,7 @@ def create_splits(processed_dir: Path) -> dict[str, list[str]]:
         Dictionary mapping split name to list of original image stems.
         Example: {'train': ['1','3','5',...], 'val': ['2','7'], 'test': ['4','9']}.
     """
-    # Figure out which original images we have by looking at tile names
+    # Get unique image names from tile filenames
     tile_dir = processed_dir / str(RESOLUTIONS[-1])
     if not tile_dir.exists():
         raise FileNotFoundError(f"Tile directory not found: {tile_dir}. Run tiling pipeline first.")
@@ -314,7 +289,7 @@ def create_splits(processed_dir: Path) -> dict[str, list[str]]:
     if not originals:
         raise ValueError(f"No tiles found in {tile_dir}")
 
-    # Shuffle with a fixed seed so the split is the same every time
+    # Fixed seed for reproducible splits
     random.seed(RANDOM_SEED)
     random.shuffle(originals)
 
@@ -441,7 +416,7 @@ def run_tiling_pipeline(
     return results
 
 
-# ---- HSV masking and Sobel edges ----
+# HSV masking and Sobel edges
 
 
 def dual_hsv_mask(tile: np.ndarray) -> np.ndarray:
@@ -457,12 +432,10 @@ def dual_hsv_mask(tile: np.ndarray) -> np.ndarray:
     """
     hsv = cv2.cvtColor(tile, cv2.COLOR_BGR2HSV)
 
-    # Red sits at both ends of the hue wheel, so we need two ranges
     red_low_range = cv2.inRange(hsv, np.array(HSV_RED_LOW1), np.array(HSV_RED_HIGH1))
     red_high_range = cv2.inRange(hsv, np.array(HSV_RED_LOW2), np.array(HSV_RED_HIGH2))
     red_mask = cv2.bitwise_or(red_low_range, red_high_range)
 
-    # White = bright pixels with very little colour saturation
     white_mask = cv2.inRange(hsv, np.array(HSV_WHITE_LOW), np.array(HSV_WHITE_HIGH))
 
     combined = cv2.bitwise_or(red_mask, white_mask)
@@ -484,14 +457,12 @@ def sobel_edges(tile: np.ndarray, mask: np.ndarray) -> np.ndarray:
     """
     gray = cv2.cvtColor(tile, cv2.COLOR_BGR2GRAY)
 
-    # Zero-out everything outside the colour mask before edge detection
     masked_gray = cv2.bitwise_and(gray, gray, mask=mask)
 
     gradient_x = cv2.Sobel(masked_gray, cv2.CV_64F, 1, 0, ksize=3)
     gradient_y = cv2.Sobel(masked_gray, cv2.CV_64F, 0, 1, ksize=3)
     magnitude = np.sqrt(gradient_x**2 + gradient_y**2)
 
-    # Scale to 0-255 so it fits in a single image channel
     max_val = magnitude.max()
     if max_val > 0:
         normalized = (magnitude / max_val * 255).astype(np.uint8)
@@ -502,16 +473,7 @@ def sobel_edges(tile: np.ndarray, mask: np.ndarray) -> np.ndarray:
 
 
 def edge_density(sobel_output: np.ndarray) -> float:
-    """Fraction of pixels with significant edge energy.
-
-    Low-density tiles are mostly empty background and can be skipped.
-
-    Args:
-        sobel_output: Edge magnitude image from sobel_edges (H, W).
-
-    Returns:
-        Fraction of pixels above the activity threshold [0.0, 1.0].
-    """
+    """Fraction of pixels with significant edge energy."""
     strong_pixels = int(np.sum(sobel_output > SOBEL_ACTIVE_THRESHOLD))
     total_pixels = sobel_output.shape[0] * sobel_output.shape[1]
 
@@ -544,12 +506,11 @@ def preprocess_tile(
     if density < DENSITY_THRESHOLD:
         return None
 
-    # Flip BGR to RGB and scale pixel values to 0-1
     rgb = cv2.cvtColor(tile, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-    rgb = np.transpose(rgb, (2, 0, 1))  # channels-first for PyTorch
+    rgb = np.transpose(rgb, (2, 0, 1))
 
     if use_sobel:
-        # Tack the edge map on as a 4th channel alongside RGB
+        # Stack Sobel as 4th channel
         sobel_normalised = sobel.astype(np.float32) / 255.0
         sobel_channel = np.expand_dims(sobel_normalised, axis=0)
         return np.concatenate([rgb, sobel_channel], axis=0)  # (4,H,W)

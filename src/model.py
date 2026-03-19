@@ -1,12 +1,8 @@
 """The neural network that actually finds Waldo.
 
-We use MobileNet V3 Large as a lightweight backbone and bolt SSD
-detection heads onto six feature-map levels so the model can spot
-Waldo at different scales.  Supports 3-channel RGB or 4-channel
+MobileNet V3 Large backbone with SSD detection heads on six
+feature-map levels. Supports 3-channel RGB or 4-channel
 RGB + Sobel edge input.
-
-Usage:
-    python -m src.model        # run sanity checks
 """
 
 import logging
@@ -36,7 +32,7 @@ _EXTRA_BLOCK_2_CHANNELS: int = 256
 # All six feature-map channel counts, in detection order
 _ALL_CHANNELS_6: list[int] = _BACKBONE_CHANNELS + [_EXTRA_BLOCK_1_CHANNELS, _EXTRA_BLOCK_2_CHANNELS]
 
-# We try three anchor shapes at every spatial location
+# Three anchor aspect ratios per spatial location
 _ASPECT_RATIOS: list[float] = [1.0, 0.5, 2.0]
 _ANCHORS_PER_CELL: int = len(_ASPECT_RATIOS)
 
@@ -77,7 +73,7 @@ def generate_anchors(
                 cy = (row + 0.5) / fmap_h
 
                 for ratio in _ASPECT_RATIOS:
-                    # Cap at 1.0 so anchors don't poke out of the image
+                    # Clamp anchors to image bounds
                     w = min(scale * math.sqrt(ratio), 1.0)
                     h = min(scale / math.sqrt(ratio), 1.0)
                     anchors.append(torch.tensor([cx, cy, w, h]))
@@ -127,7 +123,7 @@ def decode_predictions(
     return torch.stack([xmin, ymin, xmax, ymax], dim=-1)
 
 
-# ---- Extra conv blocks ----
+# Extra conv blocks
 
 
 def _make_extra_block(
@@ -135,19 +131,7 @@ def _make_extra_block(
     mid_channels: int,
     out_channels: int,
 ) -> nn.Sequential:
-    """Build one extra conv block that halves the spatial resolution.
-
-    A 1x1 bottleneck squeezes channels, then a 3x3 strided conv
-    expands them again while cutting the feature map in half.
-
-    Args:
-        in_channels: Number of input channels.
-        mid_channels: Number of channels after the 1x1 bottleneck.
-        out_channels: Number of output channels after the 3x3 conv.
-
-    Returns:
-        Sequential block that reduces spatial dims by 2x.
-    """
+    """1x1 bottleneck + 3x3 strided conv that halves spatial resolution."""
     return nn.Sequential(
         nn.Conv2d(in_channels, mid_channels, kernel_size=1, bias=False),
         nn.BatchNorm2d(mid_channels),
@@ -172,19 +156,7 @@ def _make_head(
     in_channels: int,
     num_outputs_per_anchor: int,
 ) -> nn.Conv2d:
-    """Create a single prediction head (either "is it Waldo?" or "where?").
-
-    Xavier init keeps the initial loss reasonable; PyTorch's default
-    would produce wild predictions on the first forward pass.
-
-    Args:
-        in_channels: Number of input feature channels.
-        num_outputs_per_anchor: Number of outputs per anchor (num_classes
-            for classification, 4 for regression).
-
-    Returns:
-        Conv2d layer mapping features to per-anchor predictions.
-    """
+    """Single 3x3 prediction head with Xavier init."""
     num_outputs = _ANCHORS_PER_CELL * num_outputs_per_anchor
     conv = nn.Conv2d(in_channels, num_outputs, kernel_size=3, padding=1)
     nn.init.xavier_uniform_(conv.weight)
@@ -292,9 +264,8 @@ class WaldoSSD(nn.Module):
     ) -> None:
         """Widen the first conv to accept extra input channels.
 
-        We keep the pretrained RGB weights intact and initialise the
-        new channel(s) as the average of the RGB filters — a much
-        better starting point than random noise.
+        Keeps the pretrained RGB weights and initialises extra channels
+        as the mean of the RGB filters.
 
         Args:
             backbone: The MobileNetV3 model whose first conv to modify.
@@ -315,9 +286,7 @@ class WaldoSSD(nn.Module):
         )
 
         with torch.no_grad():
-            # Carry over the learned RGB filters
             new_conv.weight[:, :3] = old_conv.weight
-            # Initialise extra channels with the RGB average
             rgb_mean = old_conv.weight.mean(dim=1, keepdim=True)
             new_conv.weight[:, 3:] = rgb_mean
 
@@ -388,8 +357,8 @@ class WaldoSSD(nn.Module):
     ) -> list[tuple[int, int]]:
         """Figure out how big each feature map is for a given input size.
 
-        We just run a dummy image through and measure, which is the
-        only reliable way to account for rounding in stride/padding.
+        Runs a dummy forward pass to measure actual sizes (accounts
+        for rounding in stride/padding).
 
         Args:
             image_size: Input image size in pixels (assumes square).

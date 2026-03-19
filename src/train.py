@@ -1,12 +1,4 @@
-"""Trains the Waldo detector from scratch (or fine-tunes it).
-
-Handles the full loop: match anchors to ground truth, compute the SSD
-loss with hard negative mining, update weights, and periodically check
-validation AP.  Pass config_overrides to swap in ablation settings.
-
-Usage:
-    python -m src.train        # 3-epoch sanity check
-"""
+"""Training loop with SSD loss and hard negative mining."""
 
 from __future__ import annotations
 
@@ -66,14 +58,7 @@ _WARMUP_EPOCHS: int = 5
 
 
 def cxcywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
-    """Centre+size  ->  corner format.
-
-    Args:
-        boxes: Tensor of shape (..., 4) in [cx, cy, w, h] format.
-
-    Returns:
-        Tensor of shape (..., 4) in [xmin, ymin, xmax, ymax] format.
-    """
+    """Centre+size -> corner format."""
     cx, cy, w, h = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
     xmin = cx - w / 2
     ymin = cy - h / 2
@@ -83,14 +68,7 @@ def cxcywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
 
 
 def xyxy_to_cxcywh(boxes: torch.Tensor) -> torch.Tensor:
-    """Corner format  ->  centre+size.
-
-    Args:
-        boxes: Tensor of shape (..., 4) in [xmin, ymin, xmax, ymax] format.
-
-    Returns:
-        Tensor of shape (..., 4) in [cx, cy, w, h] format.
-    """
+    """Corner format -> centre+size."""
     xmin, ymin, xmax, ymax = (
         boxes[..., 0],
         boxes[..., 1],
@@ -178,18 +156,7 @@ def _encode_offsets(
     anchor: torch.Tensor,
     gt_box: torch.Tensor,
 ) -> torch.Tensor:
-    """How far does the anchor need to shift to match the ground truth?
-
-    Centre offsets are divided by anchor size so small and large
-    anchors learn on the same scale.  Width/height use log-space.
-
-    Args:
-        anchor: Single anchor box (4,) in [cx, cy, w, h].
-        gt_box: Single GT box (4,) in [cx, cy, w, h].
-
-    Returns:
-        Offset tensor (4,) as [dx, dy, dw, dh].
-    """
+    """Encode GT box as offsets relative to an anchor (SSD-style)."""
     # Tiny clamp to avoid division-by-zero or log(0)
     anchor_w = anchor[2].clamp(min=1e-6)
     anchor_h = anchor[3].clamp(min=1e-6)
@@ -207,10 +174,8 @@ def _encode_offsets(
 class SSDLoss(nn.Module):
     """Classification + localisation loss, balanced by hard negative mining.
 
-    Waldo tiles are hugely imbalanced (~3 % positive), so we can't
-    just average over all anchors.  Instead we keep all positives and
-    cherry-pick the hardest negatives — the background anchors the
-    model was most confused about.
+    Tiles are heavily imbalanced, so we keep all positives and
+    keep top-k hardest background anchors.
 
     Attributes:
         neg_pos_ratio: Number of hard negatives per positive anchor.
@@ -255,12 +220,12 @@ class SSDLoss(nn.Module):
         batch_size = cls_preds.size(0)
         num_anchors = cls_preds.size(1)
 
-        # Which anchors actually have a Waldo to learn from?
+        # Positive anchor mask
         positive_mask = cls_targets > 0
         num_positives = positive_mask.sum().item()
 
         if num_positives == 0:
-            # Nothing to learn this batch — zero loss avoids div-by-zero
+            # No positives in batch, skip
             zero = torch.tensor(0.0, device=cls_preds.device, requires_grad=True)
             return zero, 0.0, 0.0
 
@@ -279,7 +244,7 @@ class SSDLoss(nn.Module):
             reduction="none",
         ).view(batch_size, num_anchors)
 
-        # Temporarily blank out positives so we can rank negatives
+        # Zero out positives for negative ranking
         cls_loss_neg = cls_loss_all.clone()
         cls_loss_neg[positive_mask] = 0.0
 
