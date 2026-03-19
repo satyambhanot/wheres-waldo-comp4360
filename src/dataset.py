@@ -21,6 +21,7 @@ from src.config import (
     DEFAULT_COLOR_MODE,
     DEFAULT_RESOLUTION,
     DENSITY_THRESHOLD,
+    DEVICE,
     RESOLUTIONS,
 )
 from src.preprocess import dual_hsv_mask, edge_density, sobel_edges
@@ -436,7 +437,7 @@ def get_dataloader(
     use_sobel: bool = True,
     use_density_filter: bool = True,
     batch_size: int = BATCH_SIZE,
-    num_workers: int = 0,
+    num_workers: int | None = None,
 ) -> DataLoader:
     """One-liner to build a ready-to-go DataLoader for any split.
 
@@ -450,11 +451,14 @@ def get_dataloader(
         use_density_filter: Whether to skip low-density tiles.
         batch_size: Number of tiles per batch.
         num_workers: Number of parallel data loading workers.
-            Use 0 on macOS/MPS to avoid multiprocessing issues.
+            Defaults to 0 on MPS (multiprocessing issues) or 2 on CUDA.
 
     Returns:
         Configured DataLoader ready for training or evaluation.
     """
+    if num_workers is None:
+        num_workers = 0 if DEVICE.type in ("mps", "cpu") else 2
+
     is_train = split == "train"
 
     dataset = WaldoDataset(
@@ -466,13 +470,15 @@ def get_dataloader(
         augment=is_train,
     )
 
+    pin_memory = DEVICE.type == "cuda"
+
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=is_train,
         num_workers=num_workers,
         collate_fn=collate_fn,
-        pin_memory=False,  # MPS doesn't benefit from pin_memory
+        pin_memory=pin_memory,
     )
 
     logger.info(
