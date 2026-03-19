@@ -53,6 +53,9 @@ _VAL_EVERY_N_EPOCHS: int = 5
 # How often to save a periodic checkpoint (every N epochs)
 _CHECKPOINT_EVERY_N_EPOCHS: int = 20
 
+# Stop training if val AP doesn't improve for this many validation checks
+_EARLY_STOP_PATIENCE: int = 6
+
 
 def cxcywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
     """Centre+size  ->  corner format.
@@ -453,6 +456,7 @@ def train(
     CHECKPOINTS.mkdir(parents=True, exist_ok=True)
 
     best_val_ap: float = 0.0
+    epochs_without_improvement: int = 0
     start_time = time.time()
 
     # Go!
@@ -507,6 +511,7 @@ def train(
 
             if val_ap > best_val_ap:
                 best_val_ap = val_ap
+                epochs_without_improvement = 0
                 best_path = CHECKPOINTS / f"{checkpoint_prefix}.pth"
                 torch.save(
                     {
@@ -526,6 +531,14 @@ def train(
                     best_path,
                 )
                 logger.info("  Saved new best model to %s", best_path)
+            else:
+                epochs_without_improvement += 1
+                if epochs_without_improvement >= _EARLY_STOP_PATIENCE:
+                    logger.info(
+                        "  Early stopping: no improvement for %d validation checks",
+                        _EARLY_STOP_PATIENCE,
+                    )
+                    break
 
         # Save a checkpoint every so often, just in case
         if epoch % _CHECKPOINT_EVERY_N_EPOCHS == 0:
