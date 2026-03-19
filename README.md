@@ -1,9 +1,10 @@
-# Where's Waldo? - CNN-Based Character Detection in Cluttered Scenes
+# Where's Waldo?
+# CNN-Based Character Detection in Cluttered Scenes
 
 **Course:** COMP 4360 Machine Learning, University of Manitoba
 **Team:** Rudy Kissel, Satyam Bhanot, Gabriel Barnabe
 **Instructor:** Dr. Christopher Henry
-**Date:** March 2026
+**Date:** January 20026 to March 2026
 
 This project adapts a strawberry detection system (Lamb & Chuah, IEEE Big Data 2018) to the domain of locating Waldo in "Where's Waldo?" puzzle illustrations. We replace the original 3-layer CNN with a MobileNet V3 Large backbone, extend the SSD detection heads from 4 to 6 levels, and introduce dual HSV masking with Sobel edge detection to exploit Waldo's distinctive red-and-white stripe pattern. The model processes high-resolution puzzle images as overlapping tiles at 64x64, 128x128, and 256x256 resolutions, predicting per-tile bounding boxes for Waldo's location.
 
