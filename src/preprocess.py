@@ -1,10 +1,8 @@
-"""Chops full-size Waldo illustrations into bite-sized tiles for training.
+"""Tiling pipeline for the Where's Waldo detection project.
 
-We take each of the 19 original puzzle images, slide a window across
-them at three zoom levels (64 / 128 / 256 px), and save every tile
-with a matching YOLO label file. On top of that, there are helpers
-for colour-based masking (to spot red-and-white stripes) and Sobel
-edge detection (to highlight stripe boundaries).
+Slices each of the 19 original puzzle images into overlapping tiles
+at 64/128/256 px with matching YOLO label files. Also provides HSV
+colour masking and Sobel edge detection used during training.
 """
 
 import json
@@ -40,9 +38,7 @@ from src.config import (
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Reading annotation files
-# ---------------------------------------------------------------------------
+# ---- Annotation parsing ----
 
 
 def parse_voc_annotation(xml_path: Path) -> dict:
@@ -112,47 +108,14 @@ def parse_voc_annotation(xml_path: Path) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Geometry helpers
-# ---------------------------------------------------------------------------
-
-
-def compute_iou(box_a: list[int], box_b: list[int]) -> float:
-    """How much do two boxes overlap?  (Intersection / Union).
-
-    Both boxes use [xmin, ymin, xmax, ymax] pixel coordinates.
-    Returns 0.0 when the boxes don't touch at all.
-
-    Args:
-        box_a: First bounding box [xmin, ymin, xmax, ymax].
-        box_b: Second bounding box [xmin, ymin, xmax, ymax].
-
-    Returns:
-        IoU value in range [0.0, 1.0].
-    """
-    x1 = max(box_a[0], box_b[0])
-    y1 = max(box_a[1], box_b[1])
-    x2 = min(box_a[2], box_b[2])
-    y2 = min(box_a[3], box_b[3])
-
-    intersection = max(0, x2 - x1) * max(0, y2 - y1)
-    area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
-    area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
-    union = area_a + area_b - intersection
-
-    if union == 0:
-        return 0.0
-
-    return intersection / union
+# ---- Geometry helpers ----
 
 
 def compute_overlap_ratio(waldo_box: list[int], tile_box: list[int]) -> float:
-    """What fraction of Waldo is visible inside this tile?
+    """What fraction of Waldo's area falls inside this tile?
 
-    Unlike IoU (which is symmetric), this asks: "if I cropped the
-    image to just this tile, how much of Waldo would I still see?"
-    A tile showing 80 % of Waldo should count as positive even when
-    the tile is way bigger than Waldo himself.
+    Not the same as IoU — this only cares about how much of Waldo
+    is visible, regardless of how big the tile is.
 
     Args:
         waldo_box: Waldo bounding box [xmin, ymin, xmax, ymax].
@@ -179,11 +142,7 @@ def clip_box_to_tile(
     waldo_box: list[int],
     tile_box: list[int],
 ) -> list[int]:
-    """Trim Waldo's box to fit inside a tile and shift it to tile-local coords.
-
-    If Waldo hangs over the edge of the tile, we clip the box so only
-    the visible part remains, then re-express coordinates relative to
-    the tile's own top-left corner.
+    """Clip Waldo's box to the tile boundary and convert to tile-local coords.
 
     Args:
         waldo_box: Waldo box in absolute coords [xmin, ymin, xmax, ymax].
@@ -222,9 +181,7 @@ def format_yolo_line(class_id: int, box: list[int], tile_size: int) -> str:
     return f"{class_id} {centre_x:.6f} {centre_y:.6f} {box_width:.6f} {box_height:.6f}"
 
 
-# ---------------------------------------------------------------------------
-# Tiling pipeline
-# ---------------------------------------------------------------------------
+# ---- Tiling ----
 
 
 def tile_single_image(
@@ -233,12 +190,10 @@ def tile_single_image(
     output_dir: Path,
     resolution: int,
 ) -> tuple[int, int]:
-    """Chop one high-res Waldo illustration into small square tiles.
+    """Slice one full-size image into square tiles with YOLO labels.
 
-    A sliding window moves across the image with a little overlap so
-    Waldo is never awkwardly cut in half at a tile boundary.  Every
-    tile is saved as a .jpg, and a matching .txt holds its YOLO label
-    (empty for background-only tiles).
+    Slides a window across the image with some overlap so Waldo
+    doesn't get cut in half at tile boundaries.
 
     Args:
         image_path: Path to the original .jpg image.
@@ -320,9 +275,7 @@ def tile_single_image(
     return waldo_tiles, background_tiles
 
 
-# ---------------------------------------------------------------------------
-# Train / validation / test split
-# ---------------------------------------------------------------------------
+# ---- Train/val/test split ----
 
 
 def create_splits(processed_dir: Path) -> dict[str, list[str]]:
@@ -386,9 +339,7 @@ def create_splits(processed_dir: Path) -> dict[str, list[str]]:
     return splits
 
 
-# ---------------------------------------------------------------------------
-# Top-level pipeline runner
-# ---------------------------------------------------------------------------
+# ---- Pipeline runner ----
 
 
 def run_tiling_pipeline(
@@ -468,17 +419,13 @@ def run_tiling_pipeline(
     return results
 
 
-# ---------------------------------------------------------------------------
-# Colour masking and edge detection
-# ---------------------------------------------------------------------------
+# ---- HSV masking and Sobel edges ----
 
 
 def dual_hsv_mask(tile: np.ndarray) -> np.ndarray:
-    """Highlight red and white pixels — the colours of Waldo's shirt.
+    """Create a binary mask of red and white pixels (Waldo's colours).
 
-    Red is tricky in HSV because the hue channel wraps around, so we
-    need two separate ranges (low reds near 0 and high reds near 180).
-    White is simply "high brightness, low saturation."
+    Red wraps around in HSV space, so we need two ranges.
 
     Args:
         tile: BGR image tile as numpy array (H, W, 3).
@@ -501,11 +448,10 @@ def dual_hsv_mask(tile: np.ndarray) -> np.ndarray:
 
 
 def sobel_edges(tile: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """Find sharp edges, but only inside the red/white masked area.
+    """Sobel edge detection restricted to the masked (red/white) area.
 
-    We run Sobel filters in X and Y on the masked greyscale tile,
-    then combine them into an edge-strength map.  This picks up the
-    stripe boundaries on Waldo's shirt while ignoring busy background.
+    Computes gradient magnitude in X and Y, but only on pixels that
+    passed the HSV mask. This highlights stripe edges on Waldo's shirt.
 
     Args:
         tile: BGR image tile as numpy array (H, W, 3).
@@ -526,18 +472,17 @@ def sobel_edges(tile: np.ndarray, mask: np.ndarray) -> np.ndarray:
     # Scale to 0-255 so it fits in a single image channel
     max_val = magnitude.max()
     if max_val > 0:
-        result: np.ndarray = (magnitude / max_val * 255).astype(np.uint8)
+        normalized = (magnitude / max_val * 255).astype(np.uint8)
     else:
-        result = magnitude.astype(np.uint8)
+        normalized = magnitude.astype(np.uint8)
 
-    return result
+    return normalized
 
 
 def edge_density(sobel_output: np.ndarray) -> float:
-    """How "edgy" is this tile?  (fraction of strong-edge pixels).
+    """Fraction of pixels with significant edge energy.
 
-    Boring background tiles have almost no edges.  We use this score
-    to throw them out early so the model doesn't waste time on them.
+    Low-density tiles are mostly empty background and can be skipped.
 
     Args:
         sobel_output: Edge magnitude image from sobel_edges (H, W).
@@ -558,11 +503,7 @@ def preprocess_tile(
     tile: np.ndarray,
     use_sobel: bool = True,
 ) -> Optional[np.ndarray]:
-    """Run colour masking + edge detection on one tile, skip if boring.
-
-    If the tile has almost no edges in the red/white regions it's
-    probably just empty background, so we return None to signal
-    "don't bother with this one."
+    """Apply HSV masking + Sobel to one tile. Returns None if below density threshold.
 
     Args:
         tile: BGR image tile as numpy array (H, W, 3).
@@ -594,9 +535,7 @@ def preprocess_tile(
     return rgb
 
 
-# ---------------------------------------------------------------------------
-# Run as a standalone script
-# ---------------------------------------------------------------------------
+# ---- Main ----
 
 
 if __name__ == "__main__":
