@@ -355,7 +355,8 @@ def run_experiment(
     is_pruned = prune_ratio > 0.0
 
     # --- Train the model ---
-    best_ckpt_path = CHECKPOINTS / "best_model.pth"
+    exp_ckpt_prefix = f"{exp_key}_best"
+    exp_ckpt_path = CHECKPOINTS / f"{exp_ckpt_prefix}.pth"
     train_start = time.time()
 
     if is_pruned:
@@ -372,7 +373,10 @@ def run_experiment(
 
         best_val_ap = _train_pruned_model(model, anchors, config)
     else:
-        best_val_ap = train(config_overrides=config)
+        best_val_ap = train(
+            config_overrides=config,
+            checkpoint_prefix=exp_ckpt_prefix,
+        )
 
         # Load the best checkpoint back in for evaluation
         model = WaldoSSD(
@@ -380,8 +384,8 @@ def run_experiment(
             num_heads=num_heads,
             in_channels=in_channels,
         )
-        if best_ckpt_path.exists():
-            checkpoint = torch.load(best_ckpt_path, map_location="cpu", weights_only=True)
+        if exp_ckpt_path.exists():
+            checkpoint = torch.load(exp_ckpt_path, map_location="cpu", weights_only=True)
             model.load_state_dict(checkpoint["model_state_dict"])
 
     training_time_min = (time.time() - train_start) / 60.0
@@ -437,13 +441,10 @@ def run_experiment(
         json.dump(result, f, indent=2)
     logger.info("Saved result to %s", result_path)
 
-    # Keep a copy of the checkpoint tagged with the experiment name
-    exp_ckpt_path = CHECKPOINTS / f"{exp_key}_best.pth"
-    if best_ckpt_path.exists() and not is_pruned:
-        shutil.copy2(best_ckpt_path, exp_ckpt_path)
-    elif is_pruned:
+    # Save the pruned model checkpoint (non-pruned models are saved by train())
+    if is_pruned:
         torch.save({"model_state_dict": model.state_dict()}, exp_ckpt_path)
-    logger.info("Saved checkpoint to %s", exp_ckpt_path)
+    logger.info("Checkpoint at %s", exp_ckpt_path)
 
     return result
 

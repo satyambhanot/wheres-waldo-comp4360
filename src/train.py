@@ -362,6 +362,7 @@ def evaluate(
 
 def train(
     config_overrides: Union[dict[str, Any], None] = None,
+    checkpoint_prefix: str = "best_model",
 ) -> float:
     """Train WaldoSSD end-to-end and return the best validation AP.
 
@@ -374,6 +375,9 @@ def train(
             Supported keys: 'resolution', 'color_mode', 'use_sobel',
             'num_heads', 'batch_size', 'learning_rate', 'num_epochs',
             'use_density_filter'.
+        checkpoint_prefix: Filename prefix for the best-model checkpoint.
+            Each caller can supply a unique prefix to avoid overwriting
+            other experiments' checkpoints.
 
     Returns:
         Best validation AP achieved during training.
@@ -503,7 +507,7 @@ def train(
 
             if val_ap > best_val_ap:
                 best_val_ap = val_ap
-                best_path = CHECKPOINTS / "best_model.pth"
+                best_path = CHECKPOINTS / f"{checkpoint_prefix}.pth"
                 torch.save(
                     {
                         "epoch": epoch,
@@ -525,7 +529,7 @@ def train(
 
         # Save a checkpoint every so often, just in case
         if epoch % _CHECKPOINT_EVERY_N_EPOCHS == 0:
-            ckpt_path = CHECKPOINTS / f"checkpoint_epoch_{epoch:03d}.pth"
+            ckpt_path = CHECKPOINTS / f"{checkpoint_prefix}_epoch_{epoch:03d}.pth"
             torch.save(
                 {
                     "epoch": epoch,
