@@ -1,7 +1,6 @@
-"""One-stop shop for all project settings.
+"""Central configuration for the Where's Waldo detection pipeline.
 
-Every tunable value lives here so we never have magic numbers
-floating around in the rest of the codebase.
+All tunable values live here so nothing is hardcoded elsewhere.
 """
 
 import logging
@@ -11,7 +10,7 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-# --- Where everything lives on disk ---
+# Paths
 PROJECT_ROOT: Path = Path(__file__).parent.parent
 DATA_RAW: Path = PROJECT_ROOT / "data" / "raw"
 DATA_PROCESSED: Path = PROJECT_ROOT / "data" / "processed"
@@ -19,7 +18,7 @@ ANNOTATIONS: Path = DATA_RAW / "annotations"
 RESULTS: Path = PROJECT_ROOT / "results"
 CHECKPOINTS: Path = RESULTS / "checkpoints"
 
-# --- Tile and dataset knobs ---
+# Dataset
 RESOLUTIONS: list[int] = [64, 128, 256]
 DEFAULT_RESOLUTION: int = 256
 TILE_OVERLAP: float = 0.15
@@ -29,7 +28,7 @@ TEST_SPLIT: float = 0.2
 COLOR_MODES: list[str] = ["color", "grayscale", "bw"]
 DEFAULT_COLOR_MODE: str = "color"
 
-# --- Color-range thresholds for picking out Waldo's red-and-white stripes ---
+# Preprocessing (HSV colour ranges for red/white detection)
 HSV_RED_LOW1: tuple[int, int, int] = (0, 70, 50)
 HSV_RED_HIGH1: tuple[int, int, int] = (10, 255, 255)
 HSV_RED_LOW2: tuple[int, int, int] = (170, 70, 50)
@@ -41,13 +40,13 @@ SOBEL_ACTIVE_THRESHOLD: int = 30
 OVERLAP_THRESHOLD: float = 0.3
 RANDOM_SEED: int = 42
 
-# --- Neural network architecture ---
+# Model architecture
 NUM_CLASSES: int = 2
 NUM_SSD_HEADS: int = 6
 BACKBONE: str = "mobilenet_v3_large"
 PRETRAINED: bool = True
 
-# --- Training hyperparameters ---
+# Training
 BATCH_SIZE: int = 32
 LEARNING_RATE: float = 1e-3
 WEIGHT_DECAY: float = 1e-4
@@ -55,13 +54,12 @@ NUM_EPOCHS: int = 200
 LR_SCHEDULER: str = "cosine"
 NEG_POS_RATIO: int = 3
 
-# --- How we judge the model's predictions ---
+# Evaluation
 IOU_THRESHOLD: float = 0.5
 NMS_THRESHOLD: float = 0.45
 CONFIDENCE_THRESHOLD: float = 0.5
 
-# --- Pick the fastest available hardware ---
-# Apple Silicon GPU first, then NVIDIA, then fall back to plain CPU
+# Device selection: MPS (Apple Silicon) > CUDA > CPU
 if torch.backends.mps.is_available():
     DEVICE: torch.device = torch.device("mps")
 elif torch.cuda.is_available():
