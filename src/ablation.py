@@ -43,9 +43,7 @@ from src.train import train
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
+# ---- Constants ----
 
 _SEED: int = 42
 
@@ -64,9 +62,7 @@ _BASELINE_ALIASES: list[str] = ["abl1_sobel_on", "abl3_color", "abl4_6heads"]
 _ABLATION_DIR: Path = RESULTS / "ablations"
 
 
-# ---------------------------------------------------------------------------
-# What each experiment looks like
-# ---------------------------------------------------------------------------
+# ---- Experiment definitions ----
 
 EXPERIMENTS: dict[str, dict[str, Any]] = {
     # --- Ablation 1: Does the Sobel edge channel help? ---
@@ -192,9 +188,7 @@ _EXECUTION_ORDER: list[str] = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Reproducibility
-# ---------------------------------------------------------------------------
+# ---- Reproducibility ----
 
 
 def set_seed(seed: int = _SEED) -> None:
@@ -213,9 +207,7 @@ def set_seed(seed: int = _SEED) -> None:
     torch.backends.cudnn.benchmark = False  # type: ignore[attr-defined]
 
 
-# ---------------------------------------------------------------------------
-# Building a slimmed-down model for the pruning experiment
-# ---------------------------------------------------------------------------
+# ---- Pruned model ----
 
 
 def create_pruned_model(
@@ -266,9 +258,7 @@ def create_pruned_model(
     return model
 
 
-# ---------------------------------------------------------------------------
-# Speed benchmarking
-# ---------------------------------------------------------------------------
+# ---- Inference timing ----
 
 
 def measure_inference_time(
@@ -317,9 +307,7 @@ def measure_inference_time(
     return elapsed_ms / _TIMED_RUNS
 
 
-# ---------------------------------------------------------------------------
-# Running a single experiment
-# ---------------------------------------------------------------------------
+# ---- Single experiment ----
 
 
 def run_experiment(
@@ -560,9 +548,7 @@ def _train_pruned_model(
     return best_val_ap
 
 
-# ---------------------------------------------------------------------------
-# Running every experiment in one go
-# ---------------------------------------------------------------------------
+# ---- Run all ----
 
 
 def run_all() -> dict[str, Any]:
@@ -633,9 +619,7 @@ def run_all() -> dict[str, Any]:
     return all_results
 
 
-# ---------------------------------------------------------------------------
-# Pretty-printed comparison table
-# ---------------------------------------------------------------------------
+# ---- Results summary ----
 
 
 def print_results_summary(all_results: dict[str, Any]) -> None:
@@ -697,9 +681,7 @@ def print_results_summary(all_results: dict[str, Any]) -> None:
     logger.info("=" * 90)
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+# ---- Main ----
 
 
 if __name__ == "__main__":

@@ -1,9 +1,7 @@
-"""Feeds tiles to PyTorch for training and evaluation.
+"""PyTorch Dataset and DataLoader for the tiled Waldo images.
 
-Once the tiling pipeline has chopped the puzzle images into small
-squares, this module loads them back up, applies any requested
-pre-processing (colour mode, Sobel edges, density filtering), and
-hands them to PyTorch's DataLoader one batch at a time.
+Loads tiles from disk, applies colour mode conversion and optional
+Sobel edge stacking, and serves (image, target) pairs for training.
 """
 
 import json
@@ -139,7 +137,7 @@ class WaldoDataset(Dataset):
         filtered: list[Path] = []
 
         for tp in tile_paths:
-            # Always keep positive tiles
+            # Always keep tiles that contain Waldo
             if self._has_labels(tp):
                 filtered.append(tp)
                 continue
@@ -179,7 +177,6 @@ class WaldoDataset(Dataset):
         return label_path.stat().st_size > 0
 
     def __len__(self) -> int:
-        """Return the number of tiles in this dataset split."""
         return len(self.tiles)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
@@ -346,9 +343,7 @@ class WaldoDataset(Dataset):
         return img, boxes, sobel_channel
 
 
-# ---------------------------------------------------------------------------
-# DataLoader helpers
-# ---------------------------------------------------------------------------
+# ---- DataLoader helpers ----
 
 
 def collate_fn(
@@ -430,9 +425,7 @@ def get_dataloader(
     return loader
 
 
-# ---------------------------------------------------------------------------
-# Quick smoke test when run directly
-# ---------------------------------------------------------------------------
+# ---- Main ----
 
 
 if __name__ == "__main__":

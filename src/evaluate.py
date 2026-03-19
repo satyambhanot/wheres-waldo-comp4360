@@ -39,9 +39,7 @@ from src.model import WaldoSSD, decode_predictions
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Drawing and metric constants
-# ---------------------------------------------------------------------------
+# ---- Constants ----
 
 # PASCAL VOC uses 11 evenly spaced recall thresholds for AP
 _AP_RECALL_POINTS: int = 11
@@ -59,9 +57,7 @@ _LINE_THICKNESS: int = 2
 _LABEL_FONT_SCALE: float = 0.5
 
 
-# ---------------------------------------------------------------------------
-# Matching predictions to ground truth
-# ---------------------------------------------------------------------------
+# ---- Detection matching ----
 
 
 def match_detections_to_gt(
@@ -142,9 +138,7 @@ def apply_nms(
     return boxes[keep_nms], scores[keep_nms]
 
 
-# ---------------------------------------------------------------------------
-# Average Precision calculation (PASCAL VOC style)
-# ---------------------------------------------------------------------------
+# ---- Average Precision ----
 
 
 def _compute_voc_ap(
@@ -198,9 +192,7 @@ def _compute_voc_ap(
     return ap / _AP_RECALL_POINTS
 
 
-# ---------------------------------------------------------------------------
-# Full evaluation with all the metrics
-# ---------------------------------------------------------------------------
+# ---- Detailed evaluation ----
 
 
 def evaluate_detailed(
@@ -288,9 +280,7 @@ def evaluate_detailed(
     }
 
 
-# ---------------------------------------------------------------------------
-# Pretty-printed results table
-# ---------------------------------------------------------------------------
+# ---- Summary printing ----
 
 
 def print_evaluation_summary(metrics: dict[str, float]) -> None:
@@ -315,9 +305,7 @@ def print_evaluation_summary(metrics: dict[str, float]) -> None:
     logger.info("=" * 50)
 
 
-# ---------------------------------------------------------------------------
-# Visual examples (TP / FP / FN images for the report)
-# ---------------------------------------------------------------------------
+# ---- Visual examples ----
 
 
 def _tensor_to_bgr(image_tensor: torch.Tensor) -> np.ndarray:
@@ -508,9 +496,7 @@ def save_detection_examples(
     )
 
 
-# ---------------------------------------------------------------------------
-# Run evaluation on the test set when called directly
-# ---------------------------------------------------------------------------
+# ---- Main ----
 
 
 if __name__ == "__main__":

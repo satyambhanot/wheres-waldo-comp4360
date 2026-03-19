@@ -41,9 +41,7 @@ _ASPECT_RATIOS: list[float] = [1.0, 0.5, 2.0]
 _ANCHORS_PER_CELL: int = len(_ASPECT_RATIOS)
 
 
-# ---------------------------------------------------------------------------
-# Anchor box generation
-# ---------------------------------------------------------------------------
+# ---- Anchor generation ----
 
 
 def generate_anchors(
@@ -87,9 +85,7 @@ def generate_anchors(
     return torch.stack(anchors, dim=0)
 
 
-# ---------------------------------------------------------------------------
-# Turning predictions back into real boxes
-# ---------------------------------------------------------------------------
+# ---- Decoding predictions ----
 
 
 def decode_predictions(
@@ -131,9 +127,7 @@ def decode_predictions(
     return torch.stack([xmin, ymin, xmax, ymax], dim=-1)
 
 
-# ---------------------------------------------------------------------------
-# Extra convolutional blocks (appended after the backbone)
-# ---------------------------------------------------------------------------
+# ---- Extra conv blocks ----
 
 
 def _make_extra_block(
@@ -171,9 +165,7 @@ def _make_extra_block(
     )
 
 
-# ---------------------------------------------------------------------------
-# Detection heads (one conv each for classification and box regression)
-# ---------------------------------------------------------------------------
+# ---- Detection heads ----
 
 
 def _make_head(
@@ -201,9 +193,7 @@ def _make_head(
     return conv
 
 
-# ---------------------------------------------------------------------------
-# The main model
-# ---------------------------------------------------------------------------
+# ---- WaldoSSD ----
 
 
 class WaldoSSD(nn.Module):
@@ -452,9 +442,7 @@ class WaldoSSD(nn.Module):
         return generate_anchors(fmap_sizes, image_size)
 
 
-# ---------------------------------------------------------------------------
-# Quick sanity checks when run directly
-# ---------------------------------------------------------------------------
+# ---- Main ----
 
 
 if __name__ == "__main__":

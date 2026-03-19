@@ -39,9 +39,7 @@ from src.model import WaldoSSD, decode_predictions
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Box-format conversion helpers
-# ---------------------------------------------------------------------------
+# ---- Constants ----
 
 # An anchor needs at least this much overlap with a GT box to be "positive"
 _IOU_MATCH_THRESHOLD: float = 0.5
@@ -95,9 +93,7 @@ def xyxy_to_cxcywh(boxes: torch.Tensor) -> torch.Tensor:
     return torch.stack([cx, cy, w, h], dim=-1)
 
 
-# ---------------------------------------------------------------------------
-# Anchor-to-ground-truth matching
-# ---------------------------------------------------------------------------
+# ---- Anchor matching ----
 
 
 def match_anchors_to_targets(
@@ -194,9 +190,7 @@ def _encode_offsets(
     return torch.stack([dx, dy, dw, dh])
 
 
-# ---------------------------------------------------------------------------
-# SSD loss with hard negative mining
-# ---------------------------------------------------------------------------
+# ---- SSD loss ----
 
 
 class SSDLoss(nn.Module):
@@ -305,9 +299,7 @@ class SSDLoss(nn.Module):
         return total_loss, cls_loss.item() / num_pos_float, reg_loss.item() / num_pos_float
 
 
-# ---------------------------------------------------------------------------
-# Quick validation AP (used inside the training loop)
-# ---------------------------------------------------------------------------
+# ---- Validation ----
 
 
 def evaluate(
@@ -365,9 +357,7 @@ def evaluate(
     return ap
 
 
-# ---------------------------------------------------------------------------
-# The main training loop
-# ---------------------------------------------------------------------------
+# ---- Training loop ----
 
 
 def train(
@@ -471,19 +461,12 @@ def train(
 
         for images, targets in train_loader:
             images = images.to(DEVICE)
-
-            # Forward
             cls_preds, loc_preds = model(images)
-
-            # Match anchors to GT
             cls_targets, reg_targets = match_anchors_to_targets(anchors, targets, resolution)
-
-            # Compute loss
             total_loss, cls_loss_val, reg_loss_val = criterion(
                 cls_preds, loc_preds, cls_targets, reg_targets
             )
 
-            # Backward
             optimizer.zero_grad()
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), _GRAD_CLIP_MAX_NORM)
@@ -566,9 +549,7 @@ def train(
     return best_val_ap
 
 
-# ---------------------------------------------------------------------------
-# Quick smoke test when run directly
-# ---------------------------------------------------------------------------
+# ---- Main ----
 
 
 if __name__ == "__main__":
