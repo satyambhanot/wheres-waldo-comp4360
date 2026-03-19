@@ -95,7 +95,7 @@ def match_detections_to_gt(
     is_correct = [False] * num_dets
 
     for rank_pos in range(num_dets):
-        d_idx = sorted_indices[rank_pos].item()
+        d_idx = int(sorted_indices[rank_pos].item())
         best_iou, best_gt = iou_matrix[d_idx].max(dim=0)
 
         if best_iou >= iou_threshold and not gt_matched[best_gt]:
@@ -159,7 +159,7 @@ def _compute_voc_ap(
         AP value in [0.0, 1.0]. Returns 0.0 if no GT boxes exist.
     """
     pr_curve = compute_pr_curve(detections, total_gt)
-    return pr_curve["ap"]
+    return float(pr_curve["ap"])
 
 
 def compute_pr_curve(
@@ -581,7 +581,7 @@ if __name__ == "__main__":
     metrics_dir.mkdir(parents=True, exist_ok=True)
 
     # Separate the large PR curve arrays from the summary metrics
-    pr_curve_data = metrics.pop("pr_curve", {})
+    pr_curve_data: dict = metrics.pop("pr_curve", {})  # type: ignore[assignment]
 
     metrics_path = metrics_dir / "test_metrics.json"
     with open(metrics_path, "w") as f:

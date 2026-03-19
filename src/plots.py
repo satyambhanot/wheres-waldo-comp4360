@@ -60,8 +60,13 @@ def plot_training_curves(history_path: Path, output_dir: Path) -> None:
     ax = axes[1]
     if val_epochs:
         ax.plot(val_epochs, val_aps, "o-", color="#4CAF50", markersize=3)
-        ax.axhline(y=data["best_val_ap"], color="red", linestyle="--",
-                    linewidth=0.8, label=f"Best={data['best_val_ap']:.4f}")
+        ax.axhline(
+            y=data["best_val_ap"],
+            color="red",
+            linestyle="--",
+            linewidth=0.8,
+            label=f"Best={data['best_val_ap']:.4f}",
+        )
         ax.legend(fontsize=8)
     ax.set_xlabel("Epoch")
     ax.set_ylabel("AP")
@@ -105,14 +110,20 @@ def plot_pr_curve(pr_path: Path, output_dir: Path, title: str = "Precision-Recal
 
     recall_points = [i / 10.0 for i in range(11)]
     if interp:
-        ax.step(recall_points, interp, where="post", color="#FF5722",
-                linewidth=2, label="11-pt interpolated")
+        ax.step(
+            recall_points,
+            interp,
+            where="post",
+            color="#FF5722",
+            linewidth=2,
+            label="11-pt interpolated",
+        )
 
     ax.set_xlabel("Recall")
     ax.set_ylabel("Precision")
     ax.set_title(title)
-    ax.set_xlim([0, 1.05])
-    ax.set_ylim([0, 1.05])
+    ax.set_xlim((0, 1.05))
+    ax.set_ylim((0, 1.05))
     ax.legend()
     ax.grid(True, alpha=0.3)
 
@@ -158,11 +169,23 @@ def plot_ablation_comparison(all_results_path: Path, output_dir: Path) -> None:
         offsets = np.arange(len(metric_labels)) - (len(metric_labels) - 1) / 2
 
         for i, label in enumerate(metric_labels):
-            bars = ax.bar(x + offsets[i] * width, values[label], width,
-                          label=label, color=_COLORS[i], alpha=0.85)
+            bars = ax.bar(
+                x + offsets[i] * width,
+                values[label],
+                width,
+                label=label,
+                color=_COLORS[i],
+                alpha=0.85,
+            )
             for bar, val in zip(bars, values[label]):
-                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
-                        f"{val:.2f}", ha="center", va="bottom", fontsize=7)
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.01,
+                    f"{val:.2f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                )
 
         ax.set_ylabel("Score")
         ax.set_title(group_name)
@@ -201,12 +224,12 @@ def _plot_efficiency_comparison(all_results: dict, output_dir: Path) -> None:
     names = [all_results[k]["experiment_name"].split(" - ", 1)[-1] for k in keys_to_plot]
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    scatter = ax.scatter(params, ms, c=aps, cmap="RdYlGn", s=100,
-                         edgecolors="black", linewidths=0.5, vmin=0, vmax=1)
+    scatter = ax.scatter(
+        params, ms, c=aps, cmap="RdYlGn", s=100, edgecolors="black", linewidths=0.5, vmin=0, vmax=1
+    )
 
     for i, name in enumerate(names):
-        ax.annotate(name, (params[i], ms[i]), fontsize=7,
-                    xytext=(5, 5), textcoords="offset points")
+        ax.annotate(name, (params[i], ms[i]), fontsize=7, xytext=(5, 5), textcoords="offset points")
 
     cbar = plt.colorbar(scatter, ax=ax)
     cbar.set_label("Test AP")
@@ -252,8 +275,14 @@ def plot_ablation_pr_overlay(ablation_dir: Path, output_dir: Path) -> None:
                 continue
 
             label = key.split("_", 1)[-1].replace("_", " ").title()
-            ax.plot(recalls, precisions, color=_COLORS[i % len(_COLORS)],
-                    linewidth=1.5, label=label, alpha=0.8)
+            ax.plot(
+                recalls,
+                precisions,
+                color=_COLORS[i % len(_COLORS)],
+                linewidth=1.5,
+                label=label,
+                alpha=0.8,
+            )
             has_data = True
 
         if not has_data:
@@ -263,8 +292,8 @@ def plot_ablation_pr_overlay(ablation_dir: Path, output_dir: Path) -> None:
         ax.set_xlabel("Recall")
         ax.set_ylabel("Precision")
         ax.set_title(f"{group_name} — PR Curves")
-        ax.set_xlim([0, 1.05])
-        ax.set_ylim([0, 1.05])
+        ax.set_xlim((0, 1.05))
+        ax.set_ylim((0, 1.05))
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
@@ -293,15 +322,12 @@ def plot_confidence_histogram(pr_path: Path, output_dir: Path) -> None:
     # Reconstruct TP/FP labels from the running precision/recall
     tp_confs: list[float] = []
     fp_confs: list[float] = []
-    running_tp = 0
-    running_fp = 0
     for i, conf in enumerate(confidences):
-        new_tp = round(recalls[i] * len(confidences)) if recalls else 0
         if i == 0:
             is_tp = precisions[0] == 1.0
         else:
-            prev_tp = round(recalls[i - 1] * len(confidences)) if recalls[i - 1] > 0 else 0
             curr_tp = round(recalls[i] * len(confidences))
+            prev_tp = round(recalls[i - 1] * len(confidences))
             is_tp = curr_tp > prev_tp
 
         if is_tp:
@@ -310,7 +336,7 @@ def plot_confidence_histogram(pr_path: Path, output_dir: Path) -> None:
             fp_confs.append(conf)
 
     fig, ax = plt.subplots(figsize=(7, 4))
-    bins = np.linspace(0, 1, 25)
+    bins = list(np.linspace(0, 1, 25))
     if tp_confs:
         ax.hist(tp_confs, bins=bins, alpha=0.7, label=f"TP ({len(tp_confs)})", color="#4CAF50")
     if fp_confs:

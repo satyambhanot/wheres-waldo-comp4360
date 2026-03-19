@@ -120,9 +120,7 @@ class WaldoDataset(Dataset):
             background_count,
         )
 
-    def _apply_density_filter(
-        self, tile_paths: list[Path], density_path: Path
-    ) -> list[Path]:
+    def _apply_density_filter(self, tile_paths: list[Path], density_path: Path) -> list[Path]:
         """Throw away tiles that are mostly blank background.
 
         Always keeps Waldo tiles regardless of density. For background
@@ -216,8 +214,11 @@ class WaldoDataset(Dataset):
         sobel_channel: np.ndarray | None = None
         if self.use_sobel:
             sobel_path = tile_path.with_name(tile_path.stem + "_sobel.png")
+            sobel_out: np.ndarray
             if sobel_path.exists():
-                sobel_out = cv2.imread(str(sobel_path), cv2.IMREAD_GRAYSCALE)
+                sobel_out = cv2.imread(  # type: ignore[assignment]
+                    str(sobel_path), cv2.IMREAD_GRAYSCALE
+                )
             else:
                 bgr_for_sobel = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
                 mask = dual_hsv_mask(bgr_for_sobel)
@@ -397,7 +398,7 @@ class WaldoDataset(Dataset):
 def collate_fn(
     batch: list[tuple[torch.Tensor, dict[str, torch.Tensor]]],
 ) -> tuple[torch.Tensor, list[dict[str, torch.Tensor]]]:
-    """Default collate can't handle variable-length boxes, so we stack images and keep targets as a list."""
+    """Stack images into a batch, keep targets as a list (variable-length boxes)."""
     images = torch.stack([item[0] for item in batch])
     targets = [item[1] for item in batch]
     return images, targets

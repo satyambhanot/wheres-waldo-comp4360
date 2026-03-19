@@ -411,7 +411,7 @@ def run_experiment(
     param_count = sum(p.numel() for p in model.parameters())
 
     # --- Save PR curve data separately (too large for summary JSON) ---
-    pr_curve_data = metrics.pop("pr_curve", {})
+    pr_curve_data: dict = metrics.pop("pr_curve", {})  # type: ignore[assignment]
     pr_path = _ABLATION_DIR / f"{exp_key}_pr_curve.json"
     with open(pr_path, "w") as f:
         json.dump(pr_curve_data, f)
@@ -433,7 +433,7 @@ def run_experiment(
             "num_gt": metrics["num_gt"],
             "best_val_ap": best_val_ap,
             "best_epoch": best_epoch,
-            "test_tiles": len(test_loader.dataset),
+            "test_tiles": len(test_loader.dataset),  # type: ignore[arg-type]
         },
         "efficiency": {
             "param_count": param_count,

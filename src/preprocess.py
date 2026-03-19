@@ -397,7 +397,9 @@ def run_tiling_pipeline(
         density_path = output_dir / "density.json"
         with open(density_path, "w") as f:
             json.dump(all_density_scores, f)
-        logger.info("Saved density scores for %d tiles to %s", len(all_density_scores), density_path)
+        logger.info(
+            "Saved density scores for %d tiles to %s", len(all_density_scores), density_path
+        )
 
         waldo_percent = total_waldo / max(1, total_waldo + total_background) * 100
         logger.info(
@@ -430,11 +432,11 @@ def run_tiling_pipeline(
         for split_name, image_names in splits.items():
             names_set = set(image_names)
             split_tiles = [
-                f for f in tile_dir.glob("*.jpg")
-                if f.stem.rsplit("_tile_", 1)[0] in names_set
+                f for f in tile_dir.glob("*.jpg") if f.stem.rsplit("_tile_", 1)[0] in names_set
             ]
             waldo_count = sum(
-                1 for f in split_tiles
+                1
+                for f in split_tiles
                 if f.with_suffix(".txt").exists() and f.with_suffix(".txt").stat().st_size > 0
             )
             if split_name not in manifest["splits"]:
@@ -502,7 +504,7 @@ def sobel_edges(tile: np.ndarray, mask: np.ndarray) -> np.ndarray:
 
     max_val = magnitude.max()
     if max_val > 0:
-        normalized = (magnitude / max_val * 255).astype(np.uint8)
+        normalized: np.ndarray = (magnitude / max_val * 255).astype(np.uint8)
     else:
         normalized = magnitude.astype(np.uint8)
 

@@ -424,12 +424,8 @@ def train(
         lr=learning_rate,
         weight_decay=WEIGHT_DECAY,
     )
-    warmup_scheduler = LinearLR(
-        optimizer, start_factor=0.01, total_iters=_WARMUP_EPOCHS
-    )
-    cosine_scheduler = CosineAnnealingLR(
-        optimizer, T_max=max(1, num_epochs - _WARMUP_EPOCHS)
-    )
+    warmup_scheduler = LinearLR(optimizer, start_factor=0.01, total_iters=_WARMUP_EPOCHS)
+    cosine_scheduler = CosineAnnealingLR(optimizer, T_max=max(1, num_epochs - _WARMUP_EPOCHS))
     scheduler = SequentialLR(
         optimizer,
         schedulers=[warmup_scheduler, cosine_scheduler],
@@ -614,8 +610,8 @@ def train(
                     "trainable_params": trainable_params,
                 },
                 "dataset": {
-                    "train_tiles": len(train_loader.dataset),
-                    "val_tiles": len(val_loader.dataset),
+                    "train_tiles": len(train_loader.dataset),  # type: ignore[arg-type]
+                    "val_tiles": len(val_loader.dataset),  # type: ignore[arg-type]
                 },
                 "best_val_ap": best_val_ap,
                 "best_epoch": best_epoch,
