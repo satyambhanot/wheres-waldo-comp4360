@@ -97,14 +97,24 @@ def match_detections_to_gt(
     gt_matched = torch.zeros(num_gt, dtype=torch.bool)
     iou_matrix = box_iou(pred_boxes, gt_boxes)
 
-    for d_idx in range(pred_boxes.size(0)):
+    # Process highest-confidence detections first so they get first
+    # claim on GT boxes (standard PASCAL VOC matching protocol).
+    num_dets = pred_boxes.size(0)
+    sorted_indices = pred_scores.argsort(descending=True)
+    is_correct = [False] * num_dets
+
+    for rank_pos in range(num_dets):
+        d_idx = sorted_indices[rank_pos].item()
         best_iou, best_gt = iou_matrix[d_idx].max(dim=0)
 
         if best_iou >= iou_threshold and not gt_matched[best_gt]:
-            detections.append((pred_scores[d_idx].item(), True))
+            is_correct[d_idx] = True
             gt_matched[best_gt] = True
-        else:
-            detections.append((pred_scores[d_idx].item(), False))
+
+    # Return results in original input order so callers can index
+    # into pred_boxes by position.
+    for d_idx in range(num_dets):
+        detections.append((pred_scores[d_idx].item(), is_correct[d_idx]))
 
     unmatched_gt = [i for i in range(num_gt) if not gt_matched[i]]
     return detections, unmatched_gt
