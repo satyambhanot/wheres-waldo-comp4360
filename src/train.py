@@ -10,6 +10,7 @@ Usage:
 
 import logging
 import time
+from pathlib import Path
 from typing import Any, Union
 
 import torch
@@ -366,6 +367,7 @@ def evaluate(
 def train(
     config_overrides: Union[dict[str, Any], None] = None,
     checkpoint_prefix: str = "best_model",
+    resume_from: Union[str, None] = None,
 ) -> float:
     """Train WaldoSSD end-to-end and return the best validation AP.
 
@@ -381,6 +383,9 @@ def train(
         checkpoint_prefix: Filename prefix for the best-model checkpoint.
             Each caller can supply a unique prefix to avoid overwriting
             other experiments' checkpoints.
+        resume_from: Path to a checkpoint file to resume training from.
+            Restores model weights, optimizer state, scheduler state,
+            and best val AP, then continues from the saved epoch.
 
     Returns:
         Best validation AP achieved during training.
@@ -457,10 +462,31 @@ def train(
 
     best_val_ap: float = 0.0
     epochs_without_improvement: int = 0
+    start_epoch: int = 1
+
+    # Resume from a previous checkpoint if requested
+    if resume_from is not None:
+        resume_path = Path(resume_from)
+        if not resume_path.exists():
+            raise FileNotFoundError(f"Resume checkpoint not found: {resume_path}")
+
+        ckpt = torch.load(resume_path, map_location=DEVICE, weights_only=True)
+        model.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        best_val_ap = ckpt.get("val_ap", 0.0)
+        start_epoch = ckpt["epoch"] + 1
+        logger.info(
+            "Resumed from %s (epoch %d, val_ap=%.4f)",
+            resume_path,
+            ckpt["epoch"],
+            best_val_ap,
+        )
+
     start_time = time.time()
 
     # Go!
-    for epoch in range(1, num_epochs + 1):
+    for epoch in range(start_epoch, num_epochs + 1):
         model.train()
         epoch_loss = 0.0
         epoch_cls_loss = 0.0
