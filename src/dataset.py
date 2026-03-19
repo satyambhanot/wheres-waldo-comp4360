@@ -220,13 +220,18 @@ class WaldoDataset(Dataset):
         # Read Waldo bounding boxes (if any) from the label file
         boxes = self._load_boxes(tile_path)
 
-        # Compute Sobel BEFORE switching colour modes, because the
-        # HSV mask needs real colour information to work properly.
+        # Load or compute Sobel edge channel. Cached Sobel PNGs from
+        # the tiling pipeline avoid repeating HSV masking + Sobel each
+        # time a tile is loaded.
         sobel_channel: Optional[np.ndarray] = None
         if self.use_sobel:
-            bgr_for_sobel = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-            mask = dual_hsv_mask(bgr_for_sobel)
-            sobel_out = sobel_edges(bgr_for_sobel, mask)
+            sobel_path = tile_path.with_name(tile_path.stem + "_sobel.png")
+            if sobel_path.exists():
+                sobel_out = cv2.imread(str(sobel_path), cv2.IMREAD_GRAYSCALE)
+            else:
+                bgr_for_sobel = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                mask = dual_hsv_mask(bgr_for_sobel)
+                sobel_out = sobel_edges(bgr_for_sobel, mask)
             sobel_channel = sobel_out.astype(np.float32) / 255.0
 
         # Random flips / jitter for training variety

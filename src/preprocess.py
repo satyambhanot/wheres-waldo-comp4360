@@ -258,12 +258,14 @@ def tile_single_image(
             with open(output_dir / f"{tile_name}.txt", "w") as f:
                 f.write("\n".join(label_lines))
 
-            # Pre-compute edge density so the dataset can filter
-            # without re-reading every tile from disk later.
+            # Pre-compute Sobel edges and density so the dataset can
+            # load the cached Sobel channel and filter by density
+            # without re-reading/recomputing from the tile image.
             mask = dual_hsv_mask(tile)
             sobel = sobel_edges(tile, mask)
             density = edge_density(sobel)
             density_scores[tile_name] = density
+            cv2.imwrite(str(output_dir / f"{tile_name}_sobel.png"), sobel)
 
             if label_lines:
                 waldo_tiles += 1
