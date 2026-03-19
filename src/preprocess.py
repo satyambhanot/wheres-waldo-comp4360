@@ -334,10 +334,11 @@ def create_splits(processed_dir: Path) -> dict[str, list[str]]:
 
     for split_name, names in splits.items():
         # Count tiles belonging to this split across all resolutions
+        names_set = set(names)
         tile_count = sum(
             1
             for tile_file in tile_dir.glob("*.jpg")
-            if tile_file.stem.rsplit("_tile_", 1)[0] in set(names)
+            if tile_file.stem.rsplit("_tile_", 1)[0] in names_set
         )
         logger.info(
             "Split '%s': %d originals -> %d tiles",
