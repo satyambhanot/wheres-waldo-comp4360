@@ -10,7 +10,7 @@ import logging
 import random
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Optional
+from __future__ import annotations
 
 import cv2
 import numpy as np
@@ -355,7 +355,7 @@ def create_splits(processed_dir: Path) -> dict[str, list[str]]:
 
 
 def run_tiling_pipeline(
-    resolutions: Optional[list[int]] = None,
+    resolutions: list[int] | None = None,
 ) -> dict[int, tuple[int, int]]:
     """Tile every image at every resolution, then create the data splits.
 
@@ -523,7 +523,7 @@ def edge_density(sobel_output: np.ndarray) -> float:
 def preprocess_tile(
     tile: np.ndarray,
     use_sobel: bool = True,
-) -> Optional[np.ndarray]:
+) -> np.ndarray | None:
     """Apply HSV masking + Sobel to one tile. Returns None if below density threshold.
 
     Args:

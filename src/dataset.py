@@ -7,7 +7,7 @@ Sobel edge stacking, and serves (image, target) pairs for training.
 import json
 import logging
 from pathlib import Path
-from typing import Optional
+from __future__ import annotations
 
 import cv2
 import numpy as np
@@ -223,7 +223,7 @@ class WaldoDataset(Dataset):
         # Load or compute Sobel edge channel. Cached Sobel PNGs from
         # the tiling pipeline avoid repeating HSV masking + Sobel each
         # time a tile is loaded.
-        sobel_channel: Optional[np.ndarray] = None
+        sobel_channel: np.ndarray | None = None
         if self.use_sobel:
             sobel_path = tile_path.with_name(tile_path.stem + "_sobel.png")
             if sobel_path.exists():
@@ -334,8 +334,8 @@ class WaldoDataset(Dataset):
         self,
         img: np.ndarray,
         boxes: list[list[float]],
-        sobel_channel: Optional[np.ndarray] = None,
-    ) -> tuple[np.ndarray, list[list[float]], Optional[np.ndarray]]:
+        sobel_channel: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, list[list[float]], np.ndarray | None]:
         """Add a bit of randomness so the model doesn't memorise tiles.
 
         Applies horizontal flip, vertical flip, small rotation, and

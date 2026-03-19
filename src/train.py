@@ -11,7 +11,9 @@ Usage:
 import logging
 import time
 from pathlib import Path
-from typing import Any, Union
+from __future__ import annotations
+
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -368,9 +370,9 @@ def evaluate(
 
 
 def train(
-    config_overrides: Union[dict[str, Any], None] = None,
+    config_overrides: dict[str, Any] | None = None,
     checkpoint_prefix: str = "best_model",
-    resume_from: Union[str, None] = None,
+    resume_from: str | None = None,
 ) -> float:
     """Train WaldoSSD end-to-end and return the best validation AP.
 
