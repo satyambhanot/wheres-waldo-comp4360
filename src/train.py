@@ -8,11 +8,12 @@ Usage:
     python -m src.train        # 3-epoch sanity check
 """
 
+from __future__ import annotations
+
+import json
 import logging
 import time
 from pathlib import Path
-from __future__ import annotations
-
 from typing import Any
 
 import torch
@@ -33,6 +34,7 @@ from src.config import (
     NUM_CLASSES,
     NUM_EPOCHS,
     NUM_SSD_HEADS,
+    RESULTS,
     WEIGHT_DECAY,
 )
 from src.dataset import get_dataloader
@@ -478,6 +480,7 @@ def train(
     best_val_ap: float = 0.0
     epochs_without_improvement: int = 0
     start_epoch: int = 1
+    training_history: list[dict[str, float]] = []
 
     # Resume from a previous checkpoint if requested
     if resume_from is not None:
@@ -534,6 +537,8 @@ def train(
         avg_reg = epoch_reg_loss / max(1, num_batches)
         elapsed = time.time() - start_time
 
+        current_lr = optimizer.param_groups[0]["lr"]
+
         logger.info(
             "Epoch %d/%d — loss=%.4f (cls=%.4f, reg=%.4f) lr=%.2e [%.0fs]",
             epoch,
@@ -541,14 +546,23 @@ def train(
             avg_loss,
             avg_cls,
             avg_reg,
-            optimizer.param_groups[0]["lr"],
+            current_lr,
             elapsed,
         )
+
+        epoch_record: dict[str, float] = {
+            "epoch": epoch,
+            "loss": avg_loss,
+            "cls_loss": avg_cls,
+            "reg_loss": avg_reg,
+            "lr": current_lr,
+        }
 
         # Check validation AP every few epochs
         if epoch % _VAL_EVERY_N_EPOCHS == 0 or epoch == num_epochs:
             val_ap = evaluate(model, val_loader, anchors, resolution, DEVICE)
             logger.info("  Val AP = %.4f (best = %.4f)", val_ap, best_val_ap)
+            epoch_record["val_ap"] = val_ap
 
             if val_ap > best_val_ap:
                 best_val_ap = val_ap
@@ -579,7 +593,10 @@ def train(
                         "  Early stopping: no improvement for %d validation checks",
                         _EARLY_STOP_PATIENCE,
                     )
+                    training_history.append(epoch_record)
                     break
+
+        training_history.append(epoch_record)
 
         # Save a checkpoint every so often, just in case
         if epoch % _CHECKPOINT_EVERY_N_EPOCHS == 0:
@@ -603,6 +620,32 @@ def train(
         total_time,
         best_val_ap,
     )
+
+    # Save training history for loss curves and report plots
+    history_dir = RESULTS / "training"
+    history_dir.mkdir(parents=True, exist_ok=True)
+    history_path = history_dir / f"{checkpoint_prefix}_history.json"
+    with open(history_path, "w") as f:
+        json.dump(
+            {
+                "config": {
+                    "resolution": resolution,
+                    "color_mode": color_mode,
+                    "use_sobel": use_sobel,
+                    "num_heads": num_heads,
+                    "in_channels": in_channels,
+                    "batch_size": batch_size,
+                    "learning_rate": learning_rate,
+                    "num_epochs": num_epochs,
+                },
+                "best_val_ap": best_val_ap,
+                "total_time_seconds": round(total_time, 1),
+                "epochs": training_history,
+            },
+            f,
+            indent=2,
+        )
+    logger.info("Saved training history to %s", history_path)
 
     return best_val_ap
 

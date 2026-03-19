@@ -168,8 +168,32 @@ def _compute_voc_ap(
     Returns:
         AP value in [0.0, 1.0]. Returns 0.0 if no GT boxes exist.
     """
+    pr_curve = compute_pr_curve(detections, total_gt)
+    return pr_curve["ap"]
+
+
+def compute_pr_curve(
+    detections: list[tuple[float, bool]],
+    total_gt: int,
+) -> dict:
+    """Build the full precision-recall curve and compute AP.
+
+    Args:
+        detections: List of (confidence, is_true_positive) tuples.
+        total_gt: Total number of ground truth boxes in the dataset.
+
+    Returns:
+        Dict with keys 'ap', 'precisions', 'recalls', 'confidences',
+        and 'interpolated_precisions' (11-point).
+    """
     if total_gt == 0:
-        return 0.0
+        return {
+            "ap": 0.0,
+            "precisions": [],
+            "recalls": [],
+            "confidences": [],
+            "interpolated_precisions": [0.0] * _AP_RECALL_POINTS,
+        }
 
     detections.sort(key=lambda x: x[0], reverse=True)
 
@@ -177,8 +201,9 @@ def _compute_voc_ap(
     running_fp = 0
     precisions: list[float] = []
     recalls: list[float] = []
+    confidences: list[float] = []
 
-    for _, is_correct in detections:
+    for conf, is_correct in detections:
         if is_correct:
             running_tp += 1
         else:
@@ -188,6 +213,7 @@ def _compute_voc_ap(
         recall = running_tp / total_gt
         precisions.append(precision)
         recalls.append(recall)
+        confidences.append(conf)
 
     # Build the precision envelope: at each point, the best precision
     # at that recall or higher. Single reverse pass is O(n).
@@ -200,8 +226,8 @@ def _compute_voc_ap(
     # At each of the 11 recall thresholds, binary-search for the first
     # detection at that recall level and read the envelope value.
     ap = 0.0
+    interpolated: list[float] = []
     for recall_threshold in [i / (_AP_RECALL_POINTS - 1) for i in range(_AP_RECALL_POINTS)]:
-        # Find first index where recall >= threshold (recalls is sorted ascending)
         lo, hi = 0, n
         while lo < hi:
             mid = (lo + hi) // 2
@@ -209,10 +235,17 @@ def _compute_voc_ap(
                 lo = mid + 1
             else:
                 hi = mid
-        if lo < n:
-            ap += max_precision_at_or_after[lo]
+        prec_at_thresh = max_precision_at_or_after[lo] if lo < n else 0.0
+        interpolated.append(prec_at_thresh)
+        ap += prec_at_thresh
 
-    return ap / _AP_RECALL_POINTS
+    return {
+        "ap": ap / _AP_RECALL_POINTS,
+        "precisions": precisions,
+        "recalls": recalls,
+        "confidences": confidences,
+        "interpolated_precisions": interpolated,
+    }
 
 
 # ---- Detailed evaluation ----
@@ -281,7 +314,7 @@ def evaluate_detailed(
                 total_fp += batch_fp
                 total_fn += len(unmatched)
 
-    ap = _compute_voc_ap(all_detections, total_gt)
+    pr_curve = compute_pr_curve(all_detections, total_gt)
 
     num_detections = total_tp + total_fp
     precision = total_tp / max(1, num_detections)
@@ -291,7 +324,7 @@ def evaluate_detailed(
     model.train()
 
     return {
-        "ap": ap,
+        "ap": pr_curve["ap"],
         "precision": precision,
         "recall": recall,
         "f1": f1,
@@ -300,6 +333,12 @@ def evaluate_detailed(
         "num_tp": float(total_tp),
         "num_fp": float(total_fp),
         "num_fn": float(total_fn),
+        "pr_curve": {
+            "precisions": pr_curve["precisions"],
+            "recalls": pr_curve["recalls"],
+            "confidences": pr_curve["confidences"],
+            "interpolated_precisions": pr_curve["interpolated_precisions"],
+        },
     }
 
 
@@ -570,6 +609,23 @@ if __name__ == "__main__":
     logger.info("Running detailed evaluation on test set (%dpx)...", resolution)
     metrics = evaluate_detailed(model, test_loader, anchors, resolution, DEVICE)
     print_evaluation_summary(metrics)
+
+    # Save metrics to JSON for the report
+    metrics_dir = RESULTS / "metrics"
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    # Separate the large PR curve arrays from the summary metrics
+    pr_curve_data = metrics.pop("pr_curve", {})
+
+    metrics_path = metrics_dir / "test_metrics.json"
+    with open(metrics_path, "w") as f:
+        json.dump(metrics, f, indent=2)
+    logger.info("Saved test metrics to %s", metrics_path)
+
+    pr_path = metrics_dir / "pr_curve.json"
+    with open(pr_path, "w") as f:
+        json.dump(pr_curve_data, f, indent=2)
+    logger.info("Saved PR curve data to %s", pr_path)
 
     # Save annotated example images for the report
     plots_dir = RESULTS / "plots"

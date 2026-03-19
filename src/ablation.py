@@ -413,6 +413,13 @@ def run_experiment(
     # --- How big is it? ---
     param_count = sum(p.numel() for p in model.parameters())
 
+    # --- Save PR curve data separately (too large for summary JSON) ---
+    pr_curve_data = metrics.pop("pr_curve", {})
+    pr_path = _ABLATION_DIR / f"{exp_key}_pr_curve.json"
+    with open(pr_path, "w") as f:
+        json.dump(pr_curve_data, f)
+    logger.info("Saved PR curve to %s", pr_path)
+
     # --- Bundle everything into a result dict ---
     result: dict[str, Any] = {
         "experiment_key": exp_key,
@@ -423,6 +430,10 @@ def run_experiment(
             "test_precision": metrics["precision"],
             "test_recall": metrics["recall"],
             "test_f1": metrics["f1"],
+            "num_tp": metrics["num_tp"],
+            "num_fp": metrics["num_fp"],
+            "num_fn": metrics["num_fn"],
+            "num_gt": metrics["num_gt"],
             "best_val_ap": best_val_ap,
         },
         "efficiency": {

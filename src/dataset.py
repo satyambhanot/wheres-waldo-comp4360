@@ -4,10 +4,11 @@ Loads tiles from disk, applies colour mode conversion and optional
 Sobel edge stacking, and serves (image, target) pairs for training.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 from pathlib import Path
-from __future__ import annotations
 
 import cv2
 import numpy as np

@@ -9,7 +9,7 @@
 PYTHON = python
 VENV   = venv/bin/activate
 
-.PHONY: help setup data train evaluate ablation ablation-single \
+.PHONY: help setup data train evaluate plots ablation ablation-single \
         check fix test-data test-model test-pipeline \
         status clean clean-data clean-checkpoints clean-results \
         all reproduce
@@ -47,6 +47,9 @@ train: ## Train baseline model (256px, color, Sobel ON, 200 epochs)
 
 evaluate: ## Evaluate best model on test set + save visual examples
 	. $(VENV) && $(PYTHON) -m src.evaluate
+
+plots: ## Generate all report figures from saved results
+	. $(VENV) && $(PYTHON) -m src.plots
 
 # ---- Ablation Studies ----
 
@@ -138,7 +141,9 @@ clean: ## Delete ALL generated files (tiles, checkpoints, results)
 	rm -f data/processed/splits.json
 	rm -rf results/checkpoints/*.pth
 	rm -rf results/ablations
-	rm -rf results/plots/*.jpg results/plots/*.json
+	rm -rf results/training
+	rm -rf results/metrics
+	rm -rf results/plots/*.jpg results/plots/*.png results/plots/*.json
 	@echo "Cleaned all generated files."
 
 clean-data: ## Delete processed tiles only (keeps raw images)
@@ -150,13 +155,15 @@ clean-checkpoints: ## Delete model checkpoints only
 	rm -rf results/checkpoints/*.pth
 	@echo "Cleaned checkpoints."
 
-clean-results: ## Delete ablation results and plots only
+clean-results: ## Delete ablation results, metrics, training history, and plots
 	rm -rf results/ablations
-	rm -rf results/plots/*.jpg results/plots/*.json
+	rm -rf results/training
+	rm -rf results/metrics
+	rm -rf results/plots/*.jpg results/plots/*.png results/plots/*.json
 	@echo "Cleaned results and plots."
 
 # ---- Composite Targets ----
 
-all: data train evaluate ## Full pipeline: data -> train -> evaluate
+all: data train evaluate plots ## Full pipeline: data -> train -> evaluate -> plots
 
-reproduce: clean data train evaluate ablation ## Full reproducible run: clean -> data -> train -> evaluate -> ablation
+reproduce: clean data train evaluate ablation plots ## Full reproducible run: clean -> data -> train -> evaluate -> ablation -> plots

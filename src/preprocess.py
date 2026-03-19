@@ -5,12 +5,13 @@ at 64/128/256 px with matching YOLO label files. Also provides HSV
 colour masking and Sobel edge detection used during training.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import random
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from __future__ import annotations
 
 import cv2
 import numpy as np
