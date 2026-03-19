@@ -189,15 +189,28 @@ def _compute_voc_ap(
         precisions.append(precision)
         recalls.append(recall)
 
-    # At each of the 11 recall thresholds, take the highest precision
-    # we ever saw at that recall level or above (the "envelope trick")
+    # Build the precision envelope: at each point, the best precision
+    # at that recall or higher. Single reverse pass is O(n).
+    n = len(precisions)
+    max_precision_at_or_after = [0.0] * n
+    max_precision_at_or_after[n - 1] = precisions[n - 1]
+    for i in range(n - 2, -1, -1):
+        max_precision_at_or_after[i] = max(precisions[i], max_precision_at_or_after[i + 1])
+
+    # At each of the 11 recall thresholds, binary-search for the first
+    # detection at that recall level and read the envelope value.
     ap = 0.0
     for recall_threshold in [i / (_AP_RECALL_POINTS - 1) for i in range(_AP_RECALL_POINTS)]:
-        best_precision = 0.0
-        for p, r in zip(precisions, recalls):
-            if r >= recall_threshold:
-                best_precision = max(best_precision, p)
-        ap += best_precision
+        # Find first index where recall >= threshold (recalls is sorted ascending)
+        lo, hi = 0, n
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if recalls[mid] < recall_threshold:
+                lo = mid + 1
+            else:
+                hi = mid
+        if lo < n:
+            ap += max_precision_at_or_after[lo]
 
     return ap / _AP_RECALL_POINTS
 
