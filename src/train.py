@@ -16,7 +16,7 @@ from typing import Any, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
 from torchvision.ops import box_iou
 
@@ -56,6 +56,9 @@ _CHECKPOINT_EVERY_N_EPOCHS: int = 20
 
 # Stop training if val AP doesn't improve for this many validation checks
 _EARLY_STOP_PATIENCE: int = 6
+
+# Linearly ramp up LR from near-zero over this many epochs
+_WARMUP_EPOCHS: int = 5
 
 
 def cxcywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
@@ -446,13 +449,23 @@ def train(
         batch_size=batch_size,
     )
 
-    # Optimiser with cosine learning-rate decay
+    # Optimiser with linear warmup then cosine decay
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=learning_rate,
         weight_decay=WEIGHT_DECAY,
     )
-    scheduler = CosineAnnealingLR(optimizer, T_max=num_epochs)
+    warmup_scheduler = LinearLR(
+        optimizer, start_factor=0.01, total_iters=_WARMUP_EPOCHS
+    )
+    cosine_scheduler = CosineAnnealingLR(
+        optimizer, T_max=max(1, num_epochs - _WARMUP_EPOCHS)
+    )
+    scheduler = SequentialLR(
+        optimizer,
+        schedulers=[warmup_scheduler, cosine_scheduler],
+        milestones=[_WARMUP_EPOCHS],
+    )
 
     # Loss function with hard negative mining
     criterion = SSDLoss(neg_pos_ratio=NEG_POS_RATIO, num_classes=NUM_CLASSES)
