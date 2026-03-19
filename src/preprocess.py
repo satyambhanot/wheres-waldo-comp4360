@@ -189,7 +189,7 @@ def tile_single_image(
     annotation_path: Path,
     output_dir: Path,
     resolution: int,
-) -> tuple[int, int]:
+) -> tuple[int, int, dict[str, float]]:
     """Slice one full-size image into square tiles with YOLO labels.
 
     Slides a window across the image with some overlap so Waldo
@@ -202,7 +202,8 @@ def tile_single_image(
         resolution: Tile size in pixels (64, 128, or 256).
 
     Returns:
-        Tuple of (positive_tile_count, negative_tile_count).
+        Tuple of (positive_tile_count, negative_tile_count, density_scores)
+        where density_scores maps tile names to their edge density values.
 
     Raises:
         FileNotFoundError: If image or annotation doesn't exist.
@@ -232,6 +233,7 @@ def tile_single_image(
     tile_number = 0
     waldo_tiles = 0
     background_tiles = 0
+    density_scores: dict[str, float] = {}
 
     # Walk the sliding window across the whole image
     for y in range(0, img_h - resolution + 1, stride):
@@ -256,6 +258,13 @@ def tile_single_image(
             with open(output_dir / f"{tile_name}.txt", "w") as f:
                 f.write("\n".join(label_lines))
 
+            # Pre-compute edge density so the dataset can filter
+            # without re-reading every tile from disk later.
+            mask = dual_hsv_mask(tile)
+            sobel = sobel_edges(tile, mask)
+            density = edge_density(sobel)
+            density_scores[tile_name] = density
+
             if label_lines:
                 waldo_tiles += 1
             else:
@@ -272,7 +281,7 @@ def tile_single_image(
         background_tiles,
     )
 
-    return waldo_tiles, background_tiles
+    return waldo_tiles, background_tiles, density_scores
 
 
 # ---- Train/val/test split ----
@@ -381,6 +390,7 @@ def run_tiling_pipeline(
         output_dir = DATA_PROCESSED / str(resolution)
         total_waldo = 0
         total_background = 0
+        all_density_scores: dict[str, float] = {}
 
         for image_path in image_paths:
             annotation_path = annotations_dir / f"{image_path.stem}.xml"
@@ -393,14 +403,22 @@ def run_tiling_pipeline(
                 continue
 
             try:
-                waldo, background = tile_single_image(
+                waldo, background, density_scores = tile_single_image(
                     image_path, annotation_path, output_dir, resolution
                 )
                 total_waldo += waldo
                 total_background += background
+                all_density_scores.update(density_scores)
             except Exception:
                 logger.exception("Failed to tile %s", image_path.name)
                 raise
+
+        # Save density scores so the dataset can filter tiles without
+        # re-reading every image from disk.
+        density_path = output_dir / "density.json"
+        with open(density_path, "w") as f:
+            json.dump(all_density_scores, f)
+        logger.info("Saved density scores for %d tiles to %s", len(all_density_scores), density_path)
 
         waldo_percent = total_waldo / max(1, total_waldo + total_background) * 100
         logger.info(

@@ -102,7 +102,8 @@ class WaldoDataset(Dataset):
 
         # Optionally drop tiles that are mostly empty background
         if use_density_filter:
-            self.tiles = self._apply_density_filter(split_tiles)
+            density_path = tile_dir / "density.json"
+            self.tiles = self._apply_density_filter(split_tiles, density_path)
         else:
             self.tiles = split_tiles
 
@@ -121,19 +122,36 @@ class WaldoDataset(Dataset):
             background_count,
         )
 
-    def _apply_density_filter(self, tile_paths: list[Path]) -> list[Path]:
+    def _apply_density_filter(
+        self, tile_paths: list[Path], density_path: Path
+    ) -> list[Path]:
         """Throw away tiles that are mostly blank background.
 
         We always keep tiles that contain Waldo, no matter how low
         their edge density is.  For background tiles, we only keep the
         ones that have enough going on to be worth training on.
 
+        Uses pre-computed density scores from the tiling pipeline when
+        available; falls back to computing on the fly if the cache is
+        missing.
+
         Args:
             tile_paths: List of tile image paths to filter.
+            density_path: Path to the density.json cache file.
 
         Returns:
             Filtered list of tile paths.
         """
+        # Load cached density scores if available
+        density_cache: dict[str, float] = {}
+        if density_path.exists():
+            with open(density_path) as f:
+                density_cache = json.load(f)
+
+        use_cache = len(density_cache) > 0
+        if not use_cache:
+            logger.warning("No density cache at %s, computing on the fly", density_path)
+
         filtered: list[Path] = []
 
         for tp in tile_paths:
@@ -142,23 +160,26 @@ class WaldoDataset(Dataset):
                 filtered.append(tp)
                 continue
 
-            img = cv2.imread(str(tp))
-            if img is None:
-                logger.warning("Failed to read tile for density check: %s", tp.name)
-                continue
-
-            mask = dual_hsv_mask(img)
-            sobel = sobel_edges(img, mask)
-            density = edge_density(sobel)
+            if use_cache:
+                density = density_cache.get(tp.stem, 0.0)
+            else:
+                img = cv2.imread(str(tp))
+                if img is None:
+                    logger.warning("Failed to read tile for density check: %s", tp.name)
+                    continue
+                mask = dual_hsv_mask(img)
+                sobel = sobel_edges(img, mask)
+                density = edge_density(sobel)
 
             if density >= DENSITY_THRESHOLD:
                 filtered.append(tp)
 
         logger.info(
-            "Density filter: %d -> %d tiles (%.0f%% removed)",
+            "Density filter: %d -> %d tiles (%.0f%% removed%s)",
             len(tile_paths),
             len(filtered),
             (1 - len(filtered) / max(1, len(tile_paths))) * 100,
+            ", cached" if use_cache else "",
         )
         return filtered
 
