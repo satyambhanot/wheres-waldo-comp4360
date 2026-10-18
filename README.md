@@ -7,7 +7,7 @@
 **Date:** January 2026 to March 2026
 
 > [!NOTE]
-> This is an earlier snapshot of the project, from March 2026, kept here for reference. The final version, with the whole team's commit history and the final results, is in [COMP_4360_GROUP_6](https://github.com/satyambhanot/COMP_4360_GROUP_6).
+> This is an earlier snapshot of the project, from March 2026, kept here for reference. The final version, with the whole team's commit history and the final results, is in [wheres-waldo-model-comparison](https://github.com/satyambhanot/wheres-waldo-model-comparison).
 
 This project takes a strawberry detection system (Lamb & Chuah, IEEE Big Data 2018) and repurposes it for finding Waldo in "Where's Waldo?" puzzle illustrations. The original paper used a simple 3-layer CNN — we swapped that out for a MobileNet V3 Large backbone, bumped the SSD detection heads from 4 to 6 levels, and added dual HSV colour masking with Sobel edge detection to pick up on Waldo's red-and-white stripes. The pipeline slices full puzzle images into overlapping tiles at 64, 128, and 256px, then predicts bounding boxes for Waldo on each tile.
 
