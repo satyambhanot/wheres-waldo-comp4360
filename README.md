@@ -15,8 +15,8 @@ This project takes a strawberry detection system (Lamb & Chuah, IEEE Big Data 20
 
 ```bash
 # 1. Clone and enter
-git clone https://github.com/satyambhanot/wheres-waldo-comp4360-early-version.git
-cd wheres-waldo-comp4360-early-version
+git clone https://github.com/satyambhanot/wheres-waldo-ssd-mobilenet-prototype.git
+cd wheres-waldo-ssd-mobilenet-prototype
 
 # 2. Set up Python venv + dependencies
 make setup
@@ -43,7 +43,7 @@ make plots
 ## Project Structure
 
 ```
-wheres-waldo-comp4360-early-version/
+wheres-waldo-ssd-mobilenet-prototype/
 ├── src/
 │   ├── __init__.py              Package init
 │   ├── config.py                Central config (paths, hyperparams, device)
